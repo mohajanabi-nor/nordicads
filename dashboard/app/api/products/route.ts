@@ -130,6 +130,17 @@ function isNoiseCollection(name: string, freq: Map<string, number>, total: numbe
   return (freq.get(name) ?? 0) >= total * NEAR_UNIVERSAL;
 }
 
+// The store tags hot drinks under several overlapping collections, so coffee
+// gets split into tiny fragments (Kaffe & Cappucino / Varmedrikker / Te & kaffe
+// (AR)). Fold those into ONE canonical cluster so all coffee & tea sit together.
+// Applied AFTER specificity selection, so a coffee also tagged in a big generic
+// bucket still resolves to its coffee collection first, then normalizes here.
+const CATEGORY_ALIASES: Record<string, string> = {
+  "Kaffe & Cappucino": "Kaffe & te",
+  "Varmedrikker": "Kaffe & te",
+  "Te & kaffe (AR)": "Kaffe & te",
+};
+
 /**
  * The single category we CLUSTER a product under = its most SPECIFIC real
  * collection (smallest catalogue-wide membership), after dropping the universal
@@ -143,7 +154,20 @@ function categoryOf(p: PickerProduct, freq: Map<string, number>, total: number):
   const cats = (p.collections ?? []).filter((c) => !isNoiseCollection(c, freq, total));
   if (cats.length === 0) return "￿Annet";
   cats.sort((a, b) => (freq.get(a)! - freq.get(b)!) || a.localeCompare(b));
-  return cats[0];
+  return CATEGORY_ALIASES[cats[0]] ?? cats[0];
+}
+
+/**
+ * Cutoff for a window of `days`, snapped to the START of the local day so the
+ * buttons mean calendar days, not rolling 24h clocks. "I dag" (1) = since local
+ * midnight today; "Siste 2 dager" (2) = since midnight yesterday; and so on
+ * (days-1 whole days before today's midnight). Without this, a product added
+ * late yesterday would wrongly show under "I dag".
+ */
+function windowCutoff(days: number): number {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  return start.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
 }
 
 export async function GET(req: NextRequest) {
@@ -161,7 +185,7 @@ export async function GET(req: NextRequest) {
     let out = products;
 
     if (since && since > 0) {
-      const cutoff = Date.now() - since * 24 * 60 * 60 * 1000;
+      const cutoff = windowCutoff(since);
       out = out.filter((p) => isFresh(p, cutoff, minRestock));
 
       // CLUSTER like-with-like: the operator reads the grid by product family

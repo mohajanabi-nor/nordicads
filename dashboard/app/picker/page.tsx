@@ -36,7 +36,13 @@ function fmtDate(iso: string | null): string {
 function withinDays(iso: string | null, days: number): boolean {
   if (!iso) return false;
   const t = new Date(iso).getTime();
-  return Number.isFinite(t) && t >= Date.now() - days * 24 * 60 * 60 * 1000;
+  // Calendar-aligned, matching the server: snap to start of the local day and
+  // count whole days back, so the card badges agree with what the window filter
+  // actually included ("I dag" = since local midnight, not a rolling 24h).
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const cutoff = start.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
+  return Number.isFinite(t) && t >= cutoff;
 }
 
 /** Why is this product in the window? new arrival, or restocked +N. Mirrors the
