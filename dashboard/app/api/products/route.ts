@@ -88,15 +88,25 @@ function isFresh(p: PickerProduct, cutoff: number, minRestock: number): boolean 
 }
 
 /**
- * The timestamp we SORT a windowed list by — the actual "freshness event", NOT
- * Shopify's updated_at (which bumps on any edit incl. a sale, so it scrambles
- * the order). A product is in the window because it's NEW (created_at) and/or
- * RESTOCKED (inventory_updated_at); rank by whichever of those two is more recent
- * so the newest arrivals / latest restocks sit on top. updated_at is deliberately
- * excluded — a mere sale must not float an old product to the front.
+ * Order a windowed list the way the operator reads the cards: NEW ARRIVALS
+ * first (newest created_at on top), then RESTOCKS (most recent restock on top).
+ *
+ * We deliberately do NOT rank by a single "max(created, inventory_updated)"
+ * timestamp: this store's whole catalogue often gets its inventory touched on
+ * the same day (a bulk sync), so inventory_updated_at is "today" for nearly
+ * every product and collapses to a useless tie — which just leaves the raw
+ * Shopify order (looks scrambled). Grouping by signal keeps each card's visible
+ * date monotonic within its group, so the order reads as sorted.
  */
-function freshnessTs(p: PickerProduct): number {
-  return Math.max(ms(p.created_at), ms(p.inventory_updated_at));
+function freshCompare(a: PickerProduct, b: PickerProduct, cutoff: number): number {
+  const aNew = ms(a.created_at) >= cutoff;
+  const bNew = ms(b.created_at) >= cutoff;
+  if (aNew !== bNew) return aNew ? -1 : 1; // new arrivals before restocks
+  // Within a group, newest relevant event first: created_at for new arrivals,
+  // inventory_updated_at (the restock moment) for restocks.
+  const at = aNew ? ms(a.created_at) : ms(a.inventory_updated_at);
+  const bt = bNew ? ms(b.created_at) : ms(b.inventory_updated_at);
+  return bt - at;
 }
 
 export async function GET(req: NextRequest) {
@@ -116,10 +126,10 @@ export async function GET(req: NextRequest) {
     if (since && since > 0) {
       const cutoff = Date.now() - since * 24 * 60 * 60 * 1000;
       out = out.filter((p) => isFresh(p, cutoff, minRestock));
-      // Re-sort by the real freshness event (newest arrival / latest restock
-      // first). Sort BEFORE the limit slice so the top N are the genuinely
-      // newest, not an arbitrary 500 that then get truncated.
-      out = [...out].sort((a, b) => freshnessTs(b) - freshnessTs(a));
+      // Order: new arrivals (newest first) then restocks (latest first). Sort
+      // BEFORE the limit slice so the top N are genuinely the freshest, not an
+      // arbitrary 500 that then get truncated.
+      out = [...out].sort((a, b) => freshCompare(a, b, cutoff));
     }
     if (query) {
       out = out.filter((p) => `${p.title} ${p.vendor}`.toLowerCase().includes(query));
