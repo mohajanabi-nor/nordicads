@@ -340,9 +340,13 @@ export default function PickerPage() {
 
       {/* product grid */}
       {loading ? (
-        <p className="rounded-2xl border border-dashed border-line bg-cream-2 p-8 text-center text-sm text-mute">
-          Henter produkter fra Shopify…
-        </p>
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-line bg-cream-2 p-10 text-center">
+          <span className="h-6 w-6 animate-spin rounded-full border-2 border-orange border-t-transparent" />
+          <p className="text-sm font-semibold text-ink">Henter produkter fra Shopify…</p>
+          <p className="text-xs text-mute">
+            Kun første lasting tar ~20–30 sek. Etterpå er alle tidsvinduene lynraske (mellomlagret i 5 min).
+          </p>
+        </div>
       ) : loadError ? (
         <p className="rounded-2xl border border-red-300 bg-red-50 p-6 text-center text-sm text-red-700">
           Kunne ikke hente produkter: {loadError}

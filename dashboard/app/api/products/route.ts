@@ -17,15 +17,24 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
+// Fetch ONE superset covering the widest picker window, then derive every
+// shorter window (3/7/14/30) by filtering it in Node. That way only the very
+// first load waits on Shopify (~20-30s); switching windows afterwards is
+// instant — no per-window cold fetch. 90 = the widest button in the picker.
+const SUPERSET_DAYS = 90;
 type Loaded = { products: PickerProduct[]; storeDomain: string };
 
-// One cache entry per window (`since` days). The worker now pushes the window
-// to Shopify (updated_at:>=cutoff), so a 14-day fetch pulls a few hundred
-// products instead of the whole 5000+ catalogue — seconds instead of ~35s. We
-// still cache 5 min so repeat visits / search-as-you-type stay instant, and
-// dedupe concurrent requests for the same window onto one worker call.
-const _cache = new Map<number, { data: Loaded; at: number }>();
-const _inflight = new Map<number, Promise<Loaded>>();
+// Store the cache on globalThis, not a module const. In Next.js dev, editing
+// ANY file recompiles the server module and resets module-level state — which
+// would wipe the cache and force a fresh ~25s Shopify fetch on the next reload.
+// globalThis survives hot-reload, so the warm cache persists across edits (and
+// this is harmless in production, where the module isn't reloaded).
+const _g = globalThis as unknown as {
+  _pickerCache?: Map<number, { data: Loaded; at: number }>;
+  _pickerInflight?: Map<number, Promise<Loaded>>;
+};
+const _cache = (_g._pickerCache ??= new Map());
+const _inflight = (_g._pickerInflight ??= new Map());
 
 async function loadWindow(sinceDays: number): Promise<Loaded> {
   const hit = _cache.get(sinceDays);
@@ -78,6 +87,18 @@ function isFresh(p: PickerProduct, cutoff: number, minRestock: number): boolean 
   return isNew || restocked;
 }
 
+/**
+ * The timestamp we SORT a windowed list by — the actual "freshness event", NOT
+ * Shopify's updated_at (which bumps on any edit incl. a sale, so it scrambles
+ * the order). A product is in the window because it's NEW (created_at) and/or
+ * RESTOCKED (inventory_updated_at); rank by whichever of those two is more recent
+ * so the newest arrivals / latest restocks sit on top. updated_at is deliberately
+ * excluded — a mere sale must not float an old product to the front.
+ */
+function freshnessTs(p: PickerProduct): number {
+  return Math.max(ms(p.created_at), ms(p.inventory_updated_at));
+}
+
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const since = sp.get("since") ? parseInt(sp.get("since")!, 10) : 0;
@@ -86,14 +107,19 @@ export async function GET(req: NextRequest) {
   const query = (sp.get("query") || "").trim().toLowerCase();
 
   try {
-    // The worker already narrowed to the window on Shopify's side; here we
-    // apply the precise new-OR-restocked rule + search + limit.
-    const { products, storeDomain } = await loadWindow(since);
+    // Load the wide superset once (cached 5 min), then filter the requested
+    // window here — so only the first visit waits, and window switches are
+    // instant. We never fetch a window wider than the superset.
+    const { products, storeDomain } = await loadWindow(SUPERSET_DAYS);
     let out = products;
 
     if (since && since > 0) {
       const cutoff = Date.now() - since * 24 * 60 * 60 * 1000;
       out = out.filter((p) => isFresh(p, cutoff, minRestock));
+      // Re-sort by the real freshness event (newest arrival / latest restock
+      // first). Sort BEFORE the limit slice so the top N are the genuinely
+      // newest, not an arbitrary 500 that then get truncated.
+      out = [...out].sort((a, b) => freshnessTs(b) - freshnessTs(a));
     }
     if (query) {
       out = out.filter((p) => `${p.title} ${p.vendor}`.toLowerCase().includes(query));
@@ -103,7 +129,7 @@ export async function GET(req: NextRequest) {
     return Response.json({
       store_domain: storeDomain,
       count: out.length,
-      cached: _cache.has(since),
+      cached: _cache.has(SUPERSET_DAYS),
       products: out,
     });
   } catch (err) {
