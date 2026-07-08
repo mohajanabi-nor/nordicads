@@ -1,0 +1,14 @@
+Pillow>=10.4
+numpy>=1.26
+requests>=2.31
+qrcode>=7.4
+python-barcode>=0.15
+scipy>=1.11
+# ML cutout: U2-Net run directly via onnxruntime (avoids rembg->numba->llvmlite,
+# which has no Python 3.13 wheel). Model bundled at worker/models/u2net.onnx.
+onnxruntime>=1.20
+python-dotenv>=1.0
+# Social reels (mp4, 9:16). imageio-ffmpeg bundles a static ffmpeg (libx264),
+# so no system ffmpeg is required.
+imageio>=2.34
+imageio-ffmpeg>=0.5

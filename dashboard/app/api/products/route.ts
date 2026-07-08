@@ -1,0 +1,112 @@
+/**
+ * List store products for the product-picker (spec: manual select flow).
+ *
+ * The worker's read-only `products` command fetches Shopify and prints one
+ * `PRODUCTS_JSON <json>` line (most-recently-edited first). Fetching the whole
+ * catalogue is slow (~20s), so we fetch the FULL list ONCE, cache it in-process
+ * for a few minutes, and do the window / search / limit filtering here in Node.
+ * That makes the first load a single fetch and every window switch instant.
+ *
+ * Query params: ?since=<days>&limit=<n>&query=<term>
+ */
+import { runWorker } from "@/lib/worker";
+import type { PickerProduct } from "@/lib/types";
+import { NextRequest } from "next/server";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+type Loaded = { products: PickerProduct[]; storeDomain: string };
+
+// One cache entry per window (`since` days). The worker now pushes the window
+// to Shopify (updated_at:>=cutoff), so a 14-day fetch pulls a few hundred
+// products instead of the whole 5000+ catalogue — seconds instead of ~35s. We
+// still cache 5 min so repeat visits / search-as-you-type stay instant, and
+// dedupe concurrent requests for the same window onto one worker call.
+const _cache = new Map<number, { data: Loaded; at: number }>();
+const _inflight = new Map<number, Promise<Loaded>>();
+
+async function loadWindow(sinceDays: number): Promise<Loaded> {
+  const hit = _cache.get(sinceDays);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
+
+  let p = _inflight.get(sinceDays);
+  if (!p) {
+    p = (async () => {
+      const args = sinceDays > 0 ? ["products", "--since", String(sinceDays)] : ["products"];
+      const { code, stdout, stderr } = await runWorker(args, 110_000);
+      if (code !== 0) throw new Error(`worker exited ${code}: ${stderr.slice(-500)}`);
+      const line = stdout.split("\n").find((l) => l.startsWith("PRODUCTS_JSON "));
+      if (!line) throw new Error("no PRODUCTS_JSON in worker output");
+      const payload = JSON.parse(line.slice("PRODUCTS_JSON ".length));
+      const data: Loaded = {
+        products: payload.products ?? [],
+        storeDomain: payload.store_domain ?? "",
+      };
+      _cache.set(sinceDays, { data, at: Date.now() });
+      return data;
+    })().finally(() => {
+      _inflight.delete(sinceDays);
+    });
+    _inflight.set(sinceDays, p);
+  }
+  return p;
+}
+
+function ms(t: string | null): number {
+  return t ? new Date(t).getTime() : 0;
+}
+
+/**
+ * "Fresh" for the picker window = genuinely new OR genuinely restocked — NOT
+ * merely last-edited. `updated_at` bumps whenever anything on the product
+ * changes (including a sale), so a product we only SOLD in the window would
+ * wrongly show up. The operator wants products they can advertise as arrived:
+ *   - NEW:       created within the window, or
+ *   - RESTOCKED: stock went up by >= minRestock vs the last baseline AND that
+ *                inventory change happened within the window.
+ * restock_increase is null when there's no baseline for the SKU (first run /
+ * never-seen product) — that's "unknown", never a confirmed restock.
+ */
+function isFresh(p: PickerProduct, cutoff: number, minRestock: number): boolean {
+  const isNew = ms(p.created_at) >= cutoff;
+  const restocked =
+    p.restock_increase != null &&
+    p.restock_increase >= minRestock &&
+    ms(p.inventory_updated_at) >= cutoff;
+  return isNew || restocked;
+}
+
+export async function GET(req: NextRequest) {
+  const sp = req.nextUrl.searchParams;
+  const since = sp.get("since") ? parseInt(sp.get("since")!, 10) : 0;
+  const limit = sp.get("limit") ? parseInt(sp.get("limit")!, 10) : null;
+  const minRestock = sp.get("minRestock") ? parseInt(sp.get("minRestock")!, 10) : 5;
+  const query = (sp.get("query") || "").trim().toLowerCase();
+
+  try {
+    // The worker already narrowed to the window on Shopify's side; here we
+    // apply the precise new-OR-restocked rule + search + limit.
+    const { products, storeDomain } = await loadWindow(since);
+    let out = products;
+
+    if (since && since > 0) {
+      const cutoff = Date.now() - since * 24 * 60 * 60 * 1000;
+      out = out.filter((p) => isFresh(p, cutoff, minRestock));
+    }
+    if (query) {
+      out = out.filter((p) => `${p.title} ${p.vendor}`.toLowerCase().includes(query));
+    }
+    if (limit && limit > 0) out = out.slice(0, limit);
+
+    return Response.json({
+      store_domain: storeDomain,
+      count: out.length,
+      cached: _cache.has(since),
+      products: out,
+    });
+  } catch (err) {
+    return Response.json({ error: String((err as Error).message) }, { status: 500 });
+  }
+}

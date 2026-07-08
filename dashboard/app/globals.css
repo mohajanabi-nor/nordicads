@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Nordic Engros brand palette (matches the worker's reel/catalogue constants) */
+:root {
+  --cream: #f7f0de;
+  --cream-2: #fbf6ea;
+  --orange: #ef781c;
+  --amber: #e0951f;
+  --ink: #2d2d34;
+  --mute: #968c78;
+  --line: #e7ddc6;
+}
+
+html,
+body {
+  background: var(--cream);
+  color: var(--ink);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

@@ -1,0 +1,24 @@
+# Secrets
+**/.env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Bundled ML model (large; fetched via scripts/fetch_model.py, re-add via LFS before deploy)
+worker/models/*.onnx
+
+# Generated output
+worker/output/*
+!worker/output/.gitkeep
+
+# Local snapshot DB
+worker/*.sqlite3
+worker/state/
+
+# OS
+.DS_Store
