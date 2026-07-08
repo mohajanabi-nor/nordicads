@@ -5,6 +5,8 @@ import Link from "next/link";
 import type { PickerProduct, ProductsResponse, StepEvent } from "@/lib/types";
 
 const WINDOWS = [
+  { days: 1, label: "I dag" },
+  { days: 2, label: "Siste 2 dager" },
   { days: 3, label: "3 dager" },
   { days: 7, label: "7 dager" },
   { days: 14, label: "14 dager" },

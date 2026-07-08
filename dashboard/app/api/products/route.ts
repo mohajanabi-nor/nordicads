@@ -109,6 +109,43 @@ function freshCompare(a: PickerProduct, b: PickerProduct, cutoff: number): numbe
   return bt - at;
 }
 
+// Collections that sit on (nearly) every product and carry no category meaning —
+// they must never be used to cluster. The DO-NOT-DELETE search collection,
+// storefront root, and the "latest arrivals" smart collection are store-wide.
+const NOISE_COLLECTION_RE = /DO NOT DELETE/i;
+const NOISE_COLLECTION_NAMES = new Set(["Hovedside", "Siste Ankomst"]);
+// A collection carried by ≥ this fraction of the catalogue is effectively
+// universal (a store-wide bucket), so it's noise for clustering purposes too.
+const NEAR_UNIVERSAL = 0.8;
+
+function collectionFreq(all: PickerProduct[]): Map<string, number> {
+  const freq = new Map<string, number>();
+  for (const p of all) for (const c of p.collections ?? []) freq.set(c, (freq.get(c) ?? 0) + 1);
+  return freq;
+}
+
+function isNoiseCollection(name: string, freq: Map<string, number>, total: number): boolean {
+  if (NOISE_COLLECTION_RE.test(name)) return true;
+  if (NOISE_COLLECTION_NAMES.has(name)) return true;
+  return (freq.get(name) ?? 0) >= total * NEAR_UNIVERSAL;
+}
+
+/**
+ * The single category we CLUSTER a product under = its most SPECIFIC real
+ * collection (smallest catalogue-wide membership), after dropping the universal
+ * noise buckets. "Most specific" is what the operator means by like-with-like:
+ * a Tiger drink tagged both "Juice & Drikkevarer" (93) and "Energidrikker" (16)
+ * clusters as Energidrikker, so energy drinks sit together instead of being
+ * diluted into the generic drinks bucket. Products with no real collection fall
+ * into a trailing "Annet" group (the ￿ prefix sorts it last, name-wise).
+ */
+function categoryOf(p: PickerProduct, freq: Map<string, number>, total: number): string {
+  const cats = (p.collections ?? []).filter((c) => !isNoiseCollection(c, freq, total));
+  if (cats.length === 0) return "￿Annet";
+  cats.sort((a, b) => (freq.get(a)! - freq.get(b)!) || a.localeCompare(b));
+  return cats[0];
+}
+
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const since = sp.get("since") ? parseInt(sp.get("since")!, 10) : 0;
@@ -126,10 +163,40 @@ export async function GET(req: NextRequest) {
     if (since && since > 0) {
       const cutoff = Date.now() - since * 24 * 60 * 60 * 1000;
       out = out.filter((p) => isFresh(p, cutoff, minRestock));
-      // Order: new arrivals (newest first) then restocks (latest first). Sort
-      // BEFORE the limit slice so the top N are genuinely the freshest, not an
-      // arbitrary 500 that then get truncated.
-      out = [...out].sort((a, b) => freshCompare(a, b, cutoff));
+
+      // CLUSTER like-with-like: the operator reads the grid by product family
+      // (all drinks together, all chocolates together), so category is the
+      // PRIMARY order key — not date. Categories themselves are ordered by their
+      // freshest arrival so the newest stuff still surfaces near the top; within
+      // a category we keep new-before-restock + newest-first, then group by brand
+      // so e.g. all Najjar coffees sit next to each other. Sorting happens BEFORE
+      // the limit slice so the kept N are the freshest whole categories.
+      const freq = collectionFreq(products); // over the full superset — stable
+      const total = products.length;
+      const cat = new Map<string, string>(); // product id -> cluster category
+      const catCreated = new Map<string, number>(); // category -> freshest created_at
+      const catInv = new Map<string, number>(); // category -> freshest restock
+      for (const p of out) {
+        const c = categoryOf(p, freq, total);
+        cat.set(p.id, c);
+        catCreated.set(c, Math.max(catCreated.get(c) ?? 0, ms(p.created_at)));
+        catInv.set(c, Math.max(catInv.get(c) ?? 0, ms(p.inventory_updated_at)));
+      }
+      out = [...out].sort((a, b) => {
+        const ca = cat.get(a.id)!, cb = cat.get(b.id)!;
+        if (ca !== cb) {
+          // Category order: freshest genuine arrival first, then freshest
+          // restock, then name — so a category with a brand-new product leads.
+          return (
+            (catCreated.get(cb)! - catCreated.get(ca)!) ||
+            (catInv.get(cb)! - catInv.get(ca)!) ||
+            ca.localeCompare(cb)
+          );
+        }
+        const f = freshCompare(a, b, cutoff);
+        if (f !== 0) return f;
+        return (a.vendor || "").localeCompare(b.vendor || "") || a.title.localeCompare(b.title);
+      });
     }
     if (query) {
       out = out.filter((p) => `${p.title} ${p.vendor}`.toLowerCase().includes(query));
