@@ -146,13 +146,18 @@ def _render_tasks(tasks: list) -> list[Path]:
 
 
 def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
-                      only_kampanje: bool = False) -> DropResult:
+                      only_kampanje: bool = False,
+                      title: str | None = None) -> DropResult:
     """Render the social assets for an edition.
 
     only_kampanje=True renders ONLY the offer (TILBUD) reel — used by the
     dashboard's "Lag tilbud annonse" button, which wants a focused offer ad
     (compare_at_price as førpris, product_type as ny pris), not the full montage
     + per-category set.
+
+    `title`, when given, overrides the montage (intro) reel's headline — this is
+    the operator's campaign line, e.g. "Vi introduserer mange varer fra Balkan".
+    It's uppercased and wrapped to fit at render time; None keeps the default.
 
     All reels are rendered in parallel (see _render_tasks); this function only
     prepares each reel's inputs then hands the render calls off as tasks.
@@ -175,9 +180,12 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
                 except Exception:  # noqa: BLE001
                     continue
         if montage_cuts:
+            montage_kwargs = {"count": edition.total_products,
+                              "out": outdir / f"{week_slug}_montage.mp4"}
+            if title and title.strip():
+                montage_kwargs["heading"] = title.strip()
             tasks.append(("montage reel", R.reel_montage, (montage_cuts,),
-                          {"count": edition.total_products,
-                           "out": outdir / f"{week_slug}_montage.mp4"}))
+                          montage_kwargs))
 
     # 2) Per-category reel (real photos, cluster-coherent). mp4 only — no PNG
     #    stories. Skip categories with no usable photo.

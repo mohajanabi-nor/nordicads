@@ -267,7 +267,8 @@ def cmd_select(args: argparse.Namespace) -> int:
     # ad renders the full montage + per-category set.
     result = build_social_drop(edition, drop,
                                week_slug="tilbud" if tilbud_mode else "utvalg",
-                               only_kampanje=tilbud_mode)
+                               only_kampanje=tilbud_mode,
+                               title=getattr(args, "title", None))
     label = "tilbud" if tilbud_mode else "manual"
     print(f"{label} drop written: 1 PDF + {len(result.assets)} mp4 -> {drop}")
     for a in result.assets:
@@ -544,6 +545,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="offer ad: keep only on-offer products, render ONLY the "
                         "kampanje reel (førpris=compare_at_price)")
     s.add_argument("--out", help="drop output directory")
+    s.add_argument("--title", metavar="TEXT",
+                   help="custom campaign headline for the montage (intro) reel, "
+                        "e.g. \"Vi introduserer mange varer fra Balkan\"")
     s.set_defaults(func=cmd_select)
 
     pr = sub.add_parser("products",

@@ -426,7 +426,7 @@ def reel_montage(cutouts: Sequence[Image.Image], count: int,
     # each product carries lower spatial frequency, which WhatsApp/IG's
     # re-compression preserves far better than a dense grid of tiny tilted
     # cut-outs — the single biggest win against the "pixelated on WhatsApp" look.
-    cols, cw, ch, gap, rows = 4, 255, 300, 18, 12
+    cols, cw, ch, gap, rows = 4, 255, 300, 18, 16
     wall_w = cols * cw + (cols + 1) * gap
     wall_h = rows * ch + (rows + 1) * gap
     wall = Image.new("RGBA", (wall_w, wall_h), (0, 0, 0, 0))
@@ -457,11 +457,12 @@ def reel_montage(cutouts: Sequence[Image.Image], count: int,
     fw = font(700, 32)
     dc.text((W // 2 - dc.textlength(CTA_WEB, font=fw) / 2, by + 74), CTA_WEB, font=fw, fill=WHITE)
 
-    # Slower travel (~1600 px vs 2300): bigger products gliding calmly read as
-    # premium AND give the encoder less frame-to-frame motion to chew through, so
-    # detail holds up after platform re-compression. The wall is tall enough that
-    # this never scrolls past its bottom into empty cream.
-    wy_start, wy_end = 470, 470 - 1600
+    # Travel far enough that a lot of products glide past in the 8 s — the wall
+    # scrolls ~2900 px (was 1600), so noticeably more of the catalogue shows.
+    # rows=16 keeps the wall taller than the scroll so it never runs into empty
+    # cream at the bottom. (Faster motion costs a little encoder detail, but
+    # showing more of the range is the point of the montage.)
+    wy_start, wy_end = 470, 470 - 2900
     frames = []
     for f in range(N):
         img = Image.new("RGBA", (W, H), CREAM + (255,))
@@ -477,8 +478,18 @@ def reel_montage(cutouts: Sequence[Image.Image], count: int,
         nf = font(800, 150)
         ntxt = str(cnt)
         d.text((W // 2 - d.textlength(ntxt, font=nf) / 2, 250), ntxt, font=nf, fill=ORANGE)
-        mlines, mhs = fit_heading(heading, 800, W - 140, 38, 26, tracking=2, max_lines=1)
-        tracked(d, W // 2, 418, mlines[0], font(800, mhs), INK, 2)
+        # Uppercase to match the brand style, and allow TWO lines so a custom
+        # campaign headline ("VI INTRODUSERER MANGE VARER FRA BALKAN") fits
+        # instead of shrinking to nothing. The block stays centred on y=418, so a
+        # one-line default ("NYE VARER DENNE UKEN") renders exactly as before.
+        mlines, mhs = fit_heading(heading.upper(), 800, W - 140, 38, 24, tracking=2, max_lines=2)
+        mf = font(800, mhs)
+        masc, mdesc = mf.getmetrics()
+        mline_h = masc + mdesc
+        my = 418 - (mline_h * (len(mlines) - 1)) // 2
+        for ln in mlines:
+            tracked(d, W // 2, my, ln, mf, INK, 2)
+            my += mline_h
         ca = ease((f - (N - 32)) / 20.0)
         if ca > 0:
             cl = ctaL.copy()

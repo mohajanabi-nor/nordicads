@@ -7,11 +7,12 @@
  * commits an inventory baseline (force_ids path). Generation happens entirely
  * in the worker process — never in this request's thread.
  *
- * Body (JSON): { ids: string[], mode?: "full" | "tilbud" }
+ * Body (JSON): { ids: string[], mode?: "full" | "tilbud", title?: string }
  *   - "full"   (default): montage + per-category + kampanje reels + PDF
  *   - "tilbud": ONLY the offer (kampanje) reel over the on-offer picks — the
  *     "Lag tilbud annonse" button. Worker filters picks to is_offer and renders
  *     only_kampanje (førpris = compare_at_price).
+ *   - title: optional campaign headline for the montage (intro) reel.
  */
 import { spawnWorker, OUTPUT_DIR } from "@/lib/worker";
 import path from "node:path";
@@ -29,7 +30,7 @@ const STEPS: { key: string; label: string; match: (l: string) => boolean }[] = [
 ];
 
 export async function POST(req: Request) {
-  let body: { ids?: string[]; mode?: string } = {};
+  let body: { ids?: string[]; mode?: string; title?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -42,6 +43,8 @@ export async function POST(req: Request) {
 
   const args = ["select", "--ids", ids.join(",")];
   if (body.mode === "tilbud") args.push("--tilbud");
+  const title = (body.title ?? "").trim();
+  if (title) args.push("--title", title);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({

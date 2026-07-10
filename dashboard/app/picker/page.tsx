@@ -72,6 +72,7 @@ export default function PickerPage() {
   const [search, setSearch] = useState("");
   const [hideOos, setHideOos] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [campaignTitle, setCampaignTitle] = useState("");
 
   // ---- render run (SSE) state ----
   const [phase, setPhase] = useState<RunPhase>("idle");
@@ -179,7 +180,7 @@ export default function PickerPage() {
       const res = await fetch("/api/select", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: Array.from(selected), mode }),
+        body: JSON.stringify({ ids: Array.from(selected), mode, title: campaignTitle.trim() }),
       });
       if (!res.body) throw new Error("Ingen strøm fra server");
       const reader = res.body.getReader();
@@ -266,6 +267,25 @@ export default function PickerPage() {
         <span className="font-semibold text-ink">lagt inn på lager (+{minRestock} eller mer)</span> i
         vinduet — rent solgte varer skjules.
       </p>
+
+      {/* campaign headline for the intro (montage) reel */}
+      <div className="rounded-2xl border border-line bg-cream-2 p-4">
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-semibold text-ink">
+            Kampanjetittel <span className="font-normal text-mute">(valgfri — vises på intro-reelen)</span>
+          </span>
+          <input
+            value={campaignTitle}
+            onChange={(e) => setCampaignTitle(e.target.value)}
+            maxLength={60}
+            placeholder="F.eks. «Vi introduserer mange varer fra Balkan»"
+            className="w-full rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
+          />
+          <span className="text-[11px] text-mute">
+            La stå tom for standardteksten «Nye varer denne uken». Vises med store bokstaver.
+          </span>
+        </label>
+      </div>
 
       {/* selection bar */}
       <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-orange/30 bg-orange/10 px-4 py-3 backdrop-blur">
