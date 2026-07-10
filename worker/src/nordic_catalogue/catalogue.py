@@ -134,7 +134,7 @@ def logo_mark(target, w):
 
 
 # ---------------- FORSIDE ----------------
-def cover(codes: list[str], week: str, cta_url: str):
+def cover(codes: list[str], week: str, cta_url: str, title: Optional[str] = None):
     cxc = (84 + W) // 2
     sun_y = 470
     yy, xx = np.mgrid[0:H, 0:W]
@@ -162,7 +162,21 @@ def cover(codes: list[str], week: str, cta_url: str):
     tracked(d, cxc, 672, "NORDIC ENGROS", font(800, 76), CREAM, 4)
     d.rectangle([cxc - 46, 772, cxc + 46, 776], fill=AMBER_DEEP)
     tracked(d, cxc, 800, "C O N S T A N T L Y   F O R W A R D", font(600, 21), MUTE_D, 3)
-    tracked(d, cxc, 918, "NYHETER & KAMPANJE", font(800, 48), AMBER, 1)
+    # Subtitle band: the operator's campaign line when given (e.g. "VI
+    # INTRODUSERER MANGE VARER FRA BALKAN"), else the default. Auto-fit so a long
+    # line shrinks (then wraps to 2 lines) instead of clipping, and stays clear
+    # of the week pill at y=992.
+    if title and title.strip():
+        up = title.strip().upper()
+        lines, tf, _ = fit_title(d, up, W - 220, 800, 48, 26, max_lines=2)
+        asc, desc = tf.getmetrics()
+        lh = asc + desc
+        ty = 918 if len(lines) == 1 else 900 - (lh * (len(lines) - 1)) // 2
+        for ln in lines:
+            d.text((cxc - d.textlength(ln, font=tf) / 2, ty), ln, font=tf, fill=AMBER)
+            ty += lh
+    else:
+        tracked(d, cxc, 918, "NYHETER & KAMPANJE", font(800, 48), AMBER, 1)
     pf = font(700, 28)
     ptw = d.textlength(week, font=pf)
     pw = ptw + 56
@@ -597,7 +611,8 @@ def contact():
 
 # ---------------- BUILD ----------------
 def build_pdf(edition: Edition, out_path: Path, week: Optional[str] = None,
-              cta_url: Optional[str] = None, save_pngs: bool = False) -> Path:
+              cta_url: Optional[str] = None, save_pngs: bool = False,
+              title: Optional[str] = None) -> Path:
     week = week or week_label()
     cta_url = cta_url or CONFIG.cta_url
     out_path = Path(out_path)
@@ -615,7 +630,7 @@ def build_pdf(edition: Edition, out_path: Path, week: Optional[str] = None,
         start_page[c] = run
         run += cat_pages[c]
 
-    pages = [cover(edition.country_codes, week, cta_url)]
+    pages = [cover(edition.country_codes, week, cta_url, title=title)]
     pages.append(index_page(edition, start_page, total_pp, week))
 
     pno = 1

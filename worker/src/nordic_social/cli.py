@@ -261,7 +261,8 @@ def cmd_select(args: argparse.Namespace) -> int:
 
     drop = Path(args.out) if args.out else new_drop_dir()
     week = week_label()
-    pdf = build_pdf(edition, drop / "katalog.pdf", week=week, cta_url=CONFIG.cta_url)
+    pdf = build_pdf(edition, drop / "katalog.pdf", week=week, cta_url=CONFIG.cta_url,
+                    title=getattr(args, "title", None))
     print(f"catalogue PDF: {pdf}")
     # tilbud mode renders ONLY the kampanje (offer) reel; the normal manual
     # ad renders the full montage + per-category set.
