@@ -176,15 +176,28 @@ export async function GET(req: NextRequest) {
   const limit = sp.get("limit") ? parseInt(sp.get("limit")!, 10) : null;
   const minRestock = sp.get("minRestock") ? parseInt(sp.get("minRestock")!, 10) : 5;
   const query = (sp.get("query") || "").trim().toLowerCase();
+  // Offer view: every product with a førpris (compare_at_price), regardless of
+  // the new/restock freshness rule. A price change only bumps updated_at, which
+  // isFresh deliberately ignores — so campaign products would otherwise be
+  // invisible here. This is the view for building a tilbud campaign.
+  const offersOnly = sp.get("offers") === "1";
+  // Let the operator force a refetch after editing prices in Shopify, instead of
+  // waiting out the 5-minute cache TTL.
+  const forceRefresh = sp.get("refresh") === "1";
 
   try {
     // Load the wide superset once (cached 5 min), then filter the requested
     // window here — so only the first visit waits, and window switches are
     // instant. We never fetch a window wider than the superset.
+    if (forceRefresh) _cache.delete(SUPERSET_DAYS);
     const { products, storeDomain } = await loadWindow(SUPERSET_DAYS);
     let out = products;
 
-    if (since && since > 0) {
+    if (offersOnly) {
+      // Most recently edited first — the prices you just changed land on top.
+      out = out.filter((p) => p.is_offer);
+      out = [...out].sort((a, b) => ms(b.updated_at) - ms(a.updated_at));
+    } else if (since && since > 0) {
       const cutoff = windowCutoff(since);
       out = out.filter((p) => isFresh(p, cutoff, minRestock));
 

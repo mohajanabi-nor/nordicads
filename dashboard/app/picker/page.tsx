@@ -66,6 +66,7 @@ function freshSignal(
 export default function PickerPage() {
   const [windowDays, setWindowDays] = useState(14);
   const [minRestock, setMinRestock] = useState(5);
+  const [offersOnly, setOffersOnly] = useState(false);
   const [products, setProducts] = useState<PickerProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -82,11 +83,16 @@ export default function PickerPage() {
   const [runError, setRunError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async (days: number, minInc: number) => {
+  const load = useCallback(async (days: number, minInc: number, opts?: { offers?: boolean; refresh?: boolean }) => {
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch(`/api/products?since=${days}&minRestock=${minInc}&limit=500`);
+      // Offer view ignores the freshness window entirely (a price change doesn't
+      // make a product "new" or "restocked"), so campaign products stay visible.
+      const qs = opts?.offers
+        ? `offers=1&limit=500`
+        : `since=${days}&minRestock=${minInc}&limit=500`;
+      const res = await fetch(`/api/products?${qs}${opts?.refresh ? "&refresh=1" : ""}`);
       const data: ProductsResponse & { error?: string } = await res.json();
       if (data.error) throw new Error(data.error);
       setProducts(data.products ?? []);
@@ -99,8 +105,8 @@ export default function PickerPage() {
   }, []);
 
   useEffect(() => {
-    load(windowDays, minRestock);
-  }, [windowDays, minRestock, load]);
+    load(windowDays, minRestock, { offers: offersOnly });
+  }, [windowDays, minRestock, offersOnly, load]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -227,10 +233,13 @@ export default function PickerPage() {
           {WINDOWS.map((w) => (
             <button
               key={w.days}
-              onClick={() => setWindowDays(w.days)}
+              onClick={() => {
+                setOffersOnly(false);
+                setWindowDays(w.days);
+              }}
               disabled={loading}
               className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${
-                windowDays === w.days
+                !offersOnly && windowDays === w.days
                   ? "bg-orange text-cream"
                   : "bg-cream text-ink/70 hover:bg-line/40"
               }`}
@@ -238,6 +247,26 @@ export default function PickerPage() {
               {w.label}
             </button>
           ))}
+          {/* Offer view: ignores the freshness window, so products you just
+              price-changed in Shopify show up even though they aren't new. */}
+          <button
+            onClick={() => setOffersOnly(true)}
+            disabled={loading}
+            title="Alle varer med førpris (tilbud) — uavhengig av tidsvindu"
+            className={`ml-1 rounded-lg px-3 py-1.5 text-sm font-bold transition ${
+              offersOnly ? "bg-red-600 text-white" : "bg-red-50 text-red-700 hover:bg-red-100"
+            }`}
+          >
+            Tilbud
+          </button>
+          <button
+            onClick={() => load(windowDays, minRestock, { offers: offersOnly, refresh: true })}
+            disabled={loading}
+            title="Hent på nytt fra Shopify (etter at du har endret priser)"
+            className="ml-1 rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/70 transition hover:bg-line/40 disabled:opacity-40"
+          >
+            ↻ Oppdater
+          </button>
         </div>
         <input
           value={search}
@@ -263,9 +292,20 @@ export default function PickerPage() {
       </div>
 
       <p className="-mt-2 px-1 text-xs text-mute">
-        Viser kun <span className="font-semibold text-ink">nye</span> varer og varer{" "}
-        <span className="font-semibold text-ink">lagt inn på lager (+{minRestock} eller mer)</span> i
-        vinduet — rent solgte varer skjules.
+        {offersOnly ? (
+          <>
+            Viser <span className="font-semibold text-ink">alle varer med førpris (tilbud)</span> —
+            uavhengig av tidsvindu, nyest endret først. Endret du priser i Shopify nå? Trykk{" "}
+            <span className="font-semibold text-ink">↻ Oppdater</span>.
+          </>
+        ) : (
+          <>
+            Viser kun <span className="font-semibold text-ink">nye</span> varer og varer{" "}
+            <span className="font-semibold text-ink">lagt inn på lager (+{minRestock} eller mer)</span> i
+            vinduet — rent solgte varer skjules. Prisendringer vises ikke her; bruk{" "}
+            <span className="font-semibold text-ink">Tilbud</span>.
+          </>
+        )}
       </p>
 
       {/* campaign headline for the intro (montage) reel */}
