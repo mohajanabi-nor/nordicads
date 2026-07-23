@@ -232,6 +232,23 @@ def cmd_select(args: argparse.Namespace) -> int:
     match = [p for p in products if matches(p)]
     print(f"[select] {len(match)} products matched")
 
+    # Manual price override for THIS AD ONLY. The catalogue price lives in
+    # Shopify's product_type field and the førpris in compare_at_price, but the
+    # operator often runs a campaign price that isn't (yet) in the store. Patch
+    # the in-memory Product so the reel/PDF print the campaign numbers — we never
+    # write back to Shopify, so the live store is untouched.
+    pris = getattr(args, "pris", None)
+    forpris = getattr(args, "forpris", None)
+    if pris is not None or forpris is not None:
+        for p in match:
+            if pris is not None:
+                p.product_type = str(pris)
+                p.price = float(pris)
+            if forpris is not None:
+                p.compare_at_price = float(forpris)
+        print(f"[select] price override (ad only, Shopify untouched): "
+              f"ny pris={pris} førpris={forpris}")
+
     # --tilbud: focused offer ad. Keep ONLY the matched products that are on
     # offer (compare_at_price set = førpris) so the kampanje reel shows real
     # deals; an offer ad over non-offer products would be a lie.
@@ -549,6 +566,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--title", metavar="TEXT",
                    help="custom campaign headline for the montage (intro) reel, "
                         "e.g. \"Vi introduserer mange varer fra Balkan\"")
+    s.add_argument("--pris", type=float, metavar="KR",
+                   help="override the campaign (ny) price for this ad only — "
+                        "does NOT change Shopify")
+    s.add_argument("--forpris", type=float, metavar="KR",
+                   help="override the førpris (before price) for this ad only — "
+                        "does NOT change Shopify; enables --tilbud without a "
+                        "compare_at_price in the store")
     s.set_defaults(func=cmd_select)
 
     pr = sub.add_parser("products",
