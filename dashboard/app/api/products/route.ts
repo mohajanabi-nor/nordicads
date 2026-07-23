@@ -189,8 +189,13 @@ export async function GET(req: NextRequest) {
     // Load the wide superset once (cached 5 min), then filter the requested
     // window here — so only the first visit waits, and window switches are
     // instant. We never fetch a window wider than the superset.
-    if (forceRefresh) _cache.delete(SUPERSET_DAYS);
-    const { products, storeDomain } = await loadWindow(SUPERSET_DAYS);
+    // The offers view must scan the WHOLE catalogue, not the 90-day superset: a
+    // førpris set months ago is still an active tilbud, and filtering the recent
+    // window silently dropped those (they looked "ignored"). sinceDays=0 makes
+    // the worker fetch every product; it's cached separately under key 0.
+    const windowKey = offersOnly ? 0 : SUPERSET_DAYS;
+    if (forceRefresh) _cache.delete(windowKey);
+    const { products, storeDomain } = await loadWindow(windowKey);
     let out = products;
 
     if (offersOnly) {
@@ -243,7 +248,7 @@ export async function GET(req: NextRequest) {
     return Response.json({
       store_domain: storeDomain,
       count: out.length,
-      cached: _cache.has(SUPERSET_DAYS),
+      cached: _cache.has(offersOnly ? 0 : SUPERSET_DAYS),
       products: out,
     });
   } catch (err) {
