@@ -269,6 +269,15 @@ def cmd_select(args: argparse.Namespace) -> int:
     edition = build_edition(products, {}, True, sales=sales,
                             cluster_of=cluster_of, force_ids=force_ids)
 
+    # A tilbud catalogue is one campaign, not a product taxonomy: splitting a
+    # handful of offers across per-category pages leaves lots of near-empty
+    # sections. Collapse everything into a single TILBUD group so the PDF reads
+    # as one offer sheet. (Order within the group is preserved from the edition.)
+    if tilbud_mode:
+        offer_cps = [cp for cat in edition.categories for cp in edition.by_category[cat]]
+        edition.categories = ["TILBUD"]
+        edition.by_category = {"TILBUD": offer_cps}
+
     print(f"[images] caching {len(match)} edition product images ...")
     # Image caching is network-bound (download per product), so run it in
     # parallel — the GIL doesn't block HTTP waits, and each cutout/cache file is
