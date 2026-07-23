@@ -122,6 +122,14 @@ export default function PickerPage() {
     [products, selected],
   );
 
+  // How many the "Skjul utsolgt" checkbox is swallowing. In the Tilbud view this
+  // is usually most of them (offers linger on sold-out stock), which reads as
+  // "nothing is showing" — so we surface the number with a one-click escape.
+  const hiddenOos = useMemo(
+    () => (hideOos ? products.filter((p) => !p.in_stock).length : 0),
+    [products, hideOos],
+  );
+
   const toggle = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -277,6 +285,11 @@ export default function PickerPage() {
         <label className="flex items-center gap-2 text-sm text-ink/80">
           <input type="checkbox" checked={hideOos} onChange={(e) => setHideOos(e.target.checked)} className="accent-orange" />
           Skjul utsolgt
+          {hiddenOos > 0 && (
+            <span className="rounded-full bg-orange/20 px-2 py-0.5 text-xs font-bold text-orange">
+              {hiddenOos} skjult
+            </span>
+          )}
         </label>
         <label className="flex items-center gap-2 text-sm text-ink/80" title="Minste antall enheter lagt inn på lager for å telle som restock (utelukker rent solgte varer)">
           Restock ≥
@@ -420,9 +433,25 @@ export default function PickerPage() {
           Kunne ikke hente produkter: {loadError}
         </p>
       ) : visible.length === 0 ? (
-        <p className="rounded-2xl border border-dashed border-line bg-cream-2 p-8 text-center text-sm text-mute">
-          Ingen produkter i dette vinduet.
-        </p>
+        <div className="rounded-2xl border border-dashed border-line bg-cream-2 p-8 text-center text-sm text-mute">
+          {hiddenOos > 0 ? (
+            <>
+              <p className="font-semibold text-ink">
+                {hiddenOos} {offersOnly ? "tilbud" : "varer"} er skjult fordi de er utsolgt.
+              </p>
+              <button
+                onClick={() => setHideOos(false)}
+                className="mt-3 rounded-lg bg-orange px-4 py-2 text-sm font-bold text-cream"
+              >
+                Vis utsolgte også
+              </button>
+            </>
+          ) : offersOnly ? (
+            <p>Ingen varer med førpris. Sett «Compare-at price» i Shopify, og trykk ↻ Oppdater.</p>
+          ) : (
+            <p>Ingen produkter i dette vinduet.</p>
+          )}
+        </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {visible.map((p) => {

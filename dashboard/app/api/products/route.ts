@@ -16,7 +16,11 @@ import { NextRequest } from "next/server";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// Long TTL: the offers view scans the WHOLE catalogue (~35s), so a short expiry
+// meant every few minutes the operator hit a 35s spinner. Prices/offers change
+// rarely, and the picker has an explicit "↻ Oppdater" (refresh=1) for the moment
+// you DO edit something in Shopify — so stale data is never forced on anyone.
+const CACHE_TTL_MS = 30 * 60 * 1000;
 // Fetch ONE superset covering the widest picker window, then derive every
 // shorter window (3/7/14/30) by filtering it in Node. That way only the very
 // first load waits on Shopify (~20-30s); switching windows afterwards is

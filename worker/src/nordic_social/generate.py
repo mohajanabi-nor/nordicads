@@ -203,21 +203,26 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
                                "out": outdir / f"{week_slug}_reel_{slug}.mp4",
                                "iso": iso, "chip_text": chip_text}))
 
-    # 3) Kampanje reel — only when there are usable TILBUD products (else skip).
+    # 3) Kampanje reels — ONE PER OFFER PRODUCT. Each offer has its own førpris
+    #    and ny pris, so they can never share a reel: a single reel can only
+    #    print one price pair, which would mislabel every other product in it.
+    #    Both hero slots show the SAME product (two angles/sizes of one item),
+    #    exactly like a single-product offer ad.
     tilbud = [cp for cp in all_cps
               if cp.state == State.TILBUD and _img_source(cp)
               and cp.product.compare_at_price and cp.product.price_value]
-    if tilbud:
+    for i, cp in enumerate(tilbud, start=1):
         try:
-            cp = tilbud[0]
-            a, _ = prep_safe(_img_source(cp), 560, -7)
-            b, _ = prep_safe(_img_source(tilbud[1] if len(tilbud) >= 2 else cp), 470, 8)
-            tasks.append(("kampanje reel", R.reel_kampanje, (a, b),
+            src = _img_source(cp)
+            a, _ = prep_safe(src, 560, -7)
+            b, _ = prep_safe(src, 470, 8)
+            name = f"{week_slug}_kampanje_{i:02d}_{_slug(cp.product.title)[:40]}.mp4"
+            tasks.append((f"kampanje reel · {cp.product.title}", R.reel_kampanje, (a, b),
                           {"new_price": cp.product.price_value,
                            "old_price": cp.product.compare_at_price,
-                           "out": outdir / f"{week_slug}_kampanje.mp4"}))
+                           "out": outdir / name}))
         except Exception as e:  # noqa: BLE001
-            print(f"[social] kampanje reel prep failed: {e}")
+            print(f"[social] kampanje reel prep failed for {cp.product.title}: {e}")
 
     return DropResult(assets=_render_tasks(tasks))
 
