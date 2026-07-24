@@ -28,7 +28,7 @@ from .config import CONFIG
 from .flags import flag
 from .images import process_product
 from .model_a import Edition
-from .models import ClassifiedProduct, State
+from .models import ClassifiedProduct, State, _format_price
 from .regions import caption_for
 
 # ---- canvas + palette (identical to prototype) ----
@@ -439,9 +439,13 @@ def card_compact(cp: ClassifiedProduct):
     sf = font(500, 17)
     cd.text((CW2 / 2 - cd.textlength(supplier, font=sf) / 2, 236), supplier, font=sf, fill=MUTE_L)
 
-    # ---- price (deep amber) ----
+    # ---- price (deep amber); on tilbud also the struck førpris beneath ----
+    offer = offer_terms(p)
     pf = font(800, 36)
-    cd.text((CW2 / 2 - cd.textlength(price, font=pf) / 2, 258), price, font=pf, fill=AMBER_DEEP)
+    price_y, sku_y = (252, 318) if offer else (258, 308)
+    cd.text((CW2 / 2 - cd.textlength(price, font=pf) / 2, price_y), price, font=pf, fill=AMBER_DEEP)
+    if offer:
+        _strike_text(cd, CW2 / 2, 296, offer[0], font(500, 18), MUTE_L)
 
     # ---- inkl. mva · SKU ----
     skutxt = f"inkl. mva · SKU {sku}"
@@ -449,7 +453,7 @@ def card_compact(cp: ClassifiedProduct):
     while ssize > 11 and cd.textlength(skutxt, font=font(500, ssize)) > CW2 - 36:
         ssize -= 1
     skf = font(500, ssize)
-    cd.text((CW2 / 2 - cd.textlength(skutxt, font=skf) / 2, 308), skutxt, font=skf, fill=MUTE_L)
+    cd.text((CW2 / 2 - cd.textlength(skutxt, font=skf) / 2, sku_y), skutxt, font=skf, fill=MUTE_L)
 
     # ---- badge: NYHET / TILBUD (TILBUD wins); RESTOCK = none ----
     badge = None
@@ -470,7 +474,46 @@ def card_compact(cp: ClassifiedProduct):
         mask = Image.new("L", (CW2, CHH2), 0)
         ImageDraw.Draw(mask).rounded_rectangle([0, 0, CW2 - 1, CHH2 - 1], radius=22, fill=255)
         sup.paste(ribbon, (0, 0), Image.composite(ribbon.split()[3], Image.new("L", (CW2, CHH2), 0), mask))
+    if offer:
+        _discount_pill(sup, offer[1], 46, 46, r=34)
     return sup
+
+
+def offer_terms(p) -> tuple[str, int] | None:
+    """('før kr 180,00', 17) for a real discount, else None.
+
+    A tilbud card must show what the customer SAVES, so we need both a førpris
+    and a lower ny pris. Guard the ordering: this store keeps compare_at_price as
+    the per-unit old price while variant price is the case price, so a
+    compare_at_price that isn't actually above the catalogue price is not a
+    discount and must not print a bogus "-0%" or a negative saving."""
+    old = p.compare_at_price
+    new = p.price_value
+    if not old or not new or old <= new:
+        return None
+    pct = int(round((1 - new / old) * 100))
+    if pct <= 0:
+        return None
+    return (f"før {_format_price(old)}", pct)
+
+
+def _strike_text(cd, cx, y, text, fnt, fill):
+    """Centred text with a strikethrough rule — the førpris."""
+    w = cd.textlength(text, font=fnt)
+    x = cx - w / 2
+    cd.text((x, y), text, font=fnt, fill=fill)
+    asc, _ = fnt.getmetrics()
+    ly = y + int(asc * 0.62)
+    cd.line([x - 2, ly, x + w + 2, ly], fill=fill, width=2)
+
+
+def _discount_pill(sup, pct: int, cx: int, cy: int, r: int = 38):
+    """Amber '-17%' disc, drawn top-LEFT so it never fights the corner ribbon."""
+    d = ImageDraw.Draw(sup)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=AMBER_DEEP + (255,))
+    txt = f"-{pct}%"
+    f = font(800, 22 if r >= 38 else 18)
+    d.text((cx - d.textlength(txt, font=f) / 2, cy - r * 0.42), txt, font=f, fill=WHITE)
 
 
 def paste_card_with_shadow(page, cardimg, x, y):

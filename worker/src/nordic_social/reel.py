@@ -49,6 +49,7 @@ class ReelStyle:
     subline_text: Optional[str] = SUBLINE_DEFAULT
     subline_y: int = 1744
     subline_start: int = 66
+    sub_heading: Optional[str] = None     # campaign title under the heading rule
     n_frames: int = N_FRAMES
 
 
@@ -90,10 +91,23 @@ def _heading_layer(style: ReelStyle, heading: str) -> Image.Image:
         tracked(d, W // 2, y, ln, f, INK, 1)
         y += line_h
     if len(lines) == 1:
+        rule_bottom = uy1
         d.rectangle([W // 2 - 70, uy0, W // 2 + 70, uy1], fill=ORANGE)
     else:
         uy = y + 12                                   # just below the last line
-        d.rectangle([W // 2 - 70, uy, W // 2 + 70, uy + (uy1 - uy0)], fill=ORANGE)
+        rule_bottom = uy + (uy1 - uy0)
+        d.rectangle([W // 2 - 70, uy, W // 2 + 70, rule_bottom], fill=ORANGE)
+    # Campaign title (operator's headline) under the rule — the space between the
+    # heading and the product circle (~y690). Wraps to <=2 lines, never clipped.
+    if style.sub_heading:
+        sub = style.sub_heading.strip()
+        slines, ss = fit_heading(sub, 700, W - 200, 38, 24, tracking=0, max_lines=2)
+        sf = font(700, ss)
+        sasc, sdesc = sf.getmetrics()
+        sy = rule_bottom + 20
+        for ln in slines:
+            d.text((W // 2 - d.textlength(ln, font=sf) / 2, sy), ln, font=sf, fill=AMBER_DEEP)
+            sy += sasc + sdesc
     return L
 
 
@@ -117,13 +131,13 @@ def _subline_layer(text: str, y: int) -> Image.Image:
     return L
 
 
-def _price_layers(new_price: float, old_price: float):
+def _price_layers(new_price: float, old_price: float, sticker_cy: int = 640):
     """Return (price_layer, sticker_cropped, sticker_pos, pct)."""
     pct = round((1 - new_price / old_price) * 100)
     # sticker -X%
     stick = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ds = ImageDraw.Draw(stick)
-    sx, sy, r = 842, 640, 96
+    sx, sy, r = 842, sticker_cy, 96
     ds.ellipse([sx - r, sy - r, sx + r, sy + r], fill=ORANGE)
     st = f"-{pct}%"
     sf = font(800, 48)
@@ -140,6 +154,12 @@ def _price_layers(new_price: float, old_price: float):
     ox = W // 2 - ow / 2
     dp.text((ox, 1486), ot, font=font(600, 46), fill=MUTE)
     dp.line([(ox, 1512), (ox + ow, 1508)], fill=MUTE, width=4)
+    # VAT note — the catalogue cards say "inkl. mva" next to every price, so the
+    # reel has to state it too or the two channels quote prices on different
+    # terms. Sits in the gap between the struck førpris and the CTA (y=1600).
+    vt = "inkl. mva"
+    vf = font(500, 30)
+    dp.text((W // 2 - dp.textlength(vt, font=vf) / 2, 1538), vt, font=vf, fill=MUTE)
     return price, stick_c, stick_pos, pct
 
 
@@ -200,7 +220,10 @@ def build_reel(
     chipL = chip_layer(chip[0], chip[4]) if chip else None
     priceL = stickC = stick_pos = None
     if price:
-        priceL, stickC, stick_pos, _pct = _price_layers(price[0], price[1])
+        # With a campaign sub-heading, the -X% sticker's default high spot (y=640)
+        # would sit right on the title, so drop it onto the product instead.
+        sticker_cy = 900 if style.sub_heading else 640
+        priceL, stickC, stick_pos, _pct = _price_layers(price[0], price[1], sticker_cy)
 
     frames = []
     for f in range(N):
@@ -595,11 +618,12 @@ def reel_vm_squad(sources: Sequence, out: Union[str, Path],
     return build_reel(specs, out, style, deco=_vm_deco(badge))
 
 
-def reel_kampanje(bottle, can, new_price: float, old_price: float, out="reel_kampanje.mp4") -> Path:
+def reel_kampanje(bottle, can, new_price: float, old_price: float,
+                  out="reel_kampanje.mp4", title: Optional[str] = None) -> Path:
     style = ReelStyle(
         circ_outer=(235, 690, 845, 1300), circ_inner=(310, 760, 770, 1230),
         compact_header=True, heading="TILBUD", cta_y=1600, cta_text="BESTILL NÅ",
-        cta_size=46, cta_start=62, subline_text=None,
+        cta_size=46, cta_start=62, subline_text=None, sub_heading=title,
     )
     specs = [(bottle, 448, 1240, 10, 0.0, False), (can, 636, 1240, 22, math.pi, False)]
     return build_reel(specs, out, style, price=(new_price, old_price))

@@ -220,7 +220,8 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
             tasks.append((f"kampanje reel · {cp.product.title}", R.reel_kampanje, (a, b),
                           {"new_price": cp.product.price_value,
                            "old_price": cp.product.compare_at_price,
-                           "out": outdir / name}))
+                           "out": outdir / name,
+                           "title": title}))
         except Exception as e:  # noqa: BLE001
             print(f"[social] kampanje reel prep failed for {cp.product.title}: {e}")
 
