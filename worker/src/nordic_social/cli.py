@@ -40,6 +40,11 @@ def _add_slider_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--slider-max", type=int, default=SLIDER_MAX_ITEMS, metavar="N",
                    help=f"max products in one slider reel "
                         f"(default {SLIDER_MAX_ITEMS} ≈ 21 s)")
+    p.add_argument("--origin", default="none", metavar="VALG",
+                   help="origin chip (flag pill) on the reels: 'none' (default, "
+                        "no chip), 'auto' (only when every product in the reel "
+                        "shares one origin), or an ISO-2 country code like 'PL' "
+                        "to print that origin on every reel")
     p.set_defaults(slider=True)
 
 
@@ -66,7 +71,8 @@ def _print_worker_banner(args: argparse.Namespace) -> None:
     except Exception:  # noqa: BLE001 — never let a banner break a render
         pass
     slider = "på" if getattr(args, "slider", True) else "av"
-    print(f"[worker] kode: {root} @ {commit} | slider={slider}")
+    origin = getattr(args, "origin", "none") or "none"
+    print(f"[worker] kode: {root} @ {commit} | slider={slider} | opprinnelse={origin}")
 
 
 def _week_slug(today: date | None = None) -> str:
@@ -177,7 +183,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
     result = build_social_drop(edition, drop, week_slug=slug,
                                slider=getattr(args, "slider", True),
-                               slider_max=getattr(args, "slider_max", SLIDER_MAX_ITEMS))
+                               slider_max=getattr(args, "slider_max", SLIDER_MAX_ITEMS),
+                               origin=getattr(args, "origin", "none"))
     extra = _render_vm_hero(args, products, drop, slug)
     n_assets = len(result.assets) + (1 if extra else 0)
     print(f"drop written: 1 PDF + {n_assets} mp4 -> {drop}")
@@ -344,7 +351,8 @@ def cmd_select(args: argparse.Namespace) -> int:
                                only_kampanje=tilbud_mode,
                                title=getattr(args, "title", None),
                                slider=getattr(args, "slider", True),
-                               slider_max=getattr(args, "slider_max", SLIDER_MAX_ITEMS))
+                               slider_max=getattr(args, "slider_max", SLIDER_MAX_ITEMS),
+                               origin=getattr(args, "origin", "none"))
     label = "tilbud" if tilbud_mode else "manual"
     print(f"{label} drop written: 1 PDF + {len(result.assets)} mp4 -> {drop}")
     for a in result.assets:
@@ -487,7 +495,7 @@ def cmd_products(args: argparse.Namespace) -> int:
     from datetime import timedelta
 
     from nordic_catalogue.models import now_utc
-    from nordic_catalogue.regions import country_to_iso
+    from nordic_catalogue.regions import NAME_NO, country_to_iso
     from nordic_catalogue.shopify_client import ShopifyClient
 
     now = now_utc()
@@ -553,6 +561,10 @@ def cmd_products(args: argparse.Namespace) -> int:
             "inventory_quantity": p.inventory_quantity,
             "in_stock": p.inventory_quantity >= max(1, CONFIG.min_stock),
             "country_code": country_to_iso(p.country_name),
+            # Norwegian display name for the code, straight from the same table
+            # the reels print, so the picker's origin menu can never offer a
+            # country the reel would refuse to render.
+            "country_name_no": NAME_NO.get(country_to_iso(p.country_name) or ""),
             "collections": p.collections,
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "updated_at": p.updated_at.isoformat() if p.updated_at else None,

@@ -17,6 +17,9 @@
  *   - slider: default true. Adds an EXTRA slider reel per category with more
  *     than 3 picks, paging through every one of them; the normal 3-vare reel is
  *     rendered either way. false sends --no-slider.
+ *   - origin: origin chip on the reels — "none" (default, no chip), "auto"
+ *     (only when every product in a reel shares one origin), or an ISO-2 code
+ *     ("PL") to print that country on every reel.
  */
 import { spawnWorker, OUTPUT_DIR } from "@/lib/worker";
 import path from "node:path";
@@ -34,7 +37,13 @@ const STEPS: { key: string; label: string; match: (l: string) => boolean }[] = [
 ];
 
 export async function POST(req: Request) {
-  let body: { ids?: string[]; mode?: string; title?: string; slider?: boolean } = {};
+  let body: {
+    ids?: string[];
+    mode?: string;
+    title?: string;
+    slider?: boolean;
+    origin?: string;
+  } = {};
   try {
     body = await req.json();
   } catch {
@@ -48,6 +57,12 @@ export async function POST(req: Request) {
   const args = ["select", "--ids", ids.join(",")];
   if (body.mode === "tilbud") args.push("--tilbud");
   if (body.slider === false) args.push("--no-slider");
+  // Only ever forward a shape the worker understands — never pass raw body text
+  // through to a subprocess argument.
+  const origin = (body.origin ?? "none").trim();
+  if (origin !== "none" && /^(auto|[A-Za-z]{2})$/.test(origin)) {
+    args.push("--origin", origin);
+  }
   const title = (body.title ?? "").trim();
   if (title) args.push("--title", title);
   const encoder = new TextEncoder();

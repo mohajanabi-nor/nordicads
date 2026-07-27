@@ -82,6 +82,11 @@ export default function PickerPage() {
   // Extra slider reel per category (pages through ALL picks, not just 3). The
   // normal 3-vare reel is rendered either way — this only adds a file.
   const [slider, setSlider] = useState(true);
+  // Origin chip (flag pill) on the reels. "none" = no chip, which is the
+  // default: it used to appear on its own whenever a reel happened to be
+  // single-origin, which is not always what the ad should say. "auto" restores
+  // that behaviour; an ISO code prints that country on every reel of the run.
+  const [origin, setOrigin] = useState("none");
 
   // ---- render run (SSE) state ----
   const [phase, setPhase] = useState<RunPhase>("idle");
@@ -134,6 +139,28 @@ export default function PickerPage() {
     () => products.filter((p) => selected.has(p.id) && p.is_offer).length,
     [products, selected],
   );
+
+  /** Countries present in the current selection (or, before you pick anything,
+   *  in the loaded list) — the only origins worth offering, since the flag has
+   *  to be true for the products actually in the reel. */
+  const originChoices = useMemo(() => {
+    const pool = selected.size > 0 ? products.filter((p) => selected.has(p.id)) : products;
+    const byCode = new Map<string, { code: string; name: string; count: number }>();
+    for (const p of pool) {
+      if (!p.country_code) continue;
+      const cur = byCode.get(p.country_code);
+      if (cur) cur.count += 1;
+      else
+        byCode.set(p.country_code, {
+          code: p.country_code,
+          name: p.country_name_no || p.country_code,
+          count: 1,
+        });
+    }
+    return Array.from(byCode.values()).sort(
+      (a, b) => b.count - a.count || a.name.localeCompare(b.name),
+    );
+  }, [products, selected]);
 
   // How many the "Skjul utsolgt" checkbox is swallowing. In the Tilbud view this
   // is usually most of them (offers linger on sold-out stock), which reads as
@@ -214,6 +241,7 @@ export default function PickerPage() {
           mode,
           title: campaignTitle.trim(),
           slider,
+          origin,
         }),
       });
       if (!res.body) throw new Error("Ingen strøm fra server");
@@ -405,6 +433,35 @@ export default function PickerPage() {
               Vanlig 3-vare reel lages uansett. Slideren kommer i tillegg, én per
               kategori med mer enn 3 varer — maks 24 varer per slider (~21 sek).
             </span>
+          </span>
+        </label>
+
+        {/* Origin chip — OFF unless you ask for it. The flag must be true for
+            every product in the reel, so the country list is built from your
+            selection, not from a fixed list. */}
+        <label className="mt-4 flex flex-col gap-1.5 border-t border-line pt-4">
+          <span className="text-sm font-semibold text-ink">
+            Opprinnelsesland på reels{" "}
+            <span className="font-normal text-mute">(valgfritt — av som standard)</span>
+          </span>
+          <select
+            value={origin}
+            onChange={(e) => setOrigin(e.target.value)}
+            className="w-full max-w-sm rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
+          >
+            <option value="none">Ingen — ikke vis land</option>
+            <option value="auto">
+              Automatisk — kun når alle varene i reelen har samme land
+            </option>
+            {originChoices.map((c) => (
+              <option key={c.code} value={c.code}>
+                {`Alltid «FRA ${c.name}» (${c.count} ${c.count === 1 ? "vare" : "varer"})`}
+              </option>
+            ))}
+          </select>
+          <span className="text-[11px] text-mute">
+            Velger du et land, får ALLE reelene i denne kjøringen det flagget — også
+            varer fra et annet land. Listen viser landene i utvalget ditt.
           </span>
         </label>
       </div>

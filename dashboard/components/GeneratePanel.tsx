@@ -21,6 +21,10 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
   const [mock, setMock] = useState(false);
   const [commit, setCommit] = useState(true);
   const [slider, setSlider] = useState(true);
+  // Origin chip: off by default. The weekly drop spans the whole catalogue, so
+  // there is no sensible fixed country here — only "never" or "when the reel is
+  // genuinely single-origin". A specific country is a manual-ad choice (picker).
+  const [origin, setOrigin] = useState("none");
   const [steps, setSteps] = useState<Record<string, StepEvent["status"]>>({});
   const [logs, setLogs] = useState<string[]>([]);
   const [result, setResult] = useState<{ drop: string | null; assets: number } | null>(null);
@@ -48,7 +52,7 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mock, commit, slider }),
+        body: JSON.stringify({ mock, commit, slider, origin }),
         signal: ac.signal,
       });
       if (!res.body) throw new Error("Ingen strøm fra server");
@@ -140,6 +144,18 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
         <label className="flex items-center gap-2" title="Én ekstra reel per kategori som blar gjennom ALLE varene, 3 om gangen (maks 24)">
           <input type="checkbox" checked={slider} disabled={running} onChange={(e) => setSlider(e.target.checked)} className="accent-orange" />
           <span className="text-ink/80">Slider-reel i tillegg (alle varer)</span>
+        </label>
+        <label className="flex items-center gap-2" title="Flagg-merket «FRA POLEN» på reelene. Av som standard; «automatisk» viser det kun når alle varene i reelen har samme land.">
+          <span className="text-ink/80">Opprinnelsesland</span>
+          <select
+            value={origin}
+            disabled={running}
+            onChange={(e) => setOrigin(e.target.value)}
+            className="rounded-lg border border-line bg-cream px-2 py-1 text-sm text-ink outline-none focus:border-orange"
+          >
+            <option value="none">av</option>
+            <option value="auto">automatisk</option>
+          </select>
         </label>
       </div>
 

@@ -12,8 +12,9 @@ Outputs per drop (ALL mp4, from REAL product photos):
     that pages through all of them 3 at a time (12 new ice creams ship as 12, not
     as the top 3). The 3-hero reel above is still rendered — the slider is extra.
   - a kampanje reel when TILBUD products (compare_at_price) exist
-  - origin chip per category only when a single origin clearly dominates
-    (never guess: mixed/None origins → no chip)
+  - an origin chip (flag pill) ONLY if the operator asks for one: off by default,
+    "auto" prints it when every product in the reel shares one origin, or a fixed
+    ISO code prints that country on every reel (see `origin` in build_social_drop)
 The drop is video-only: no PNG stories or debug PNGs are written. Empty pieces
 are skipped (e.g. no reel for a category with no usable photo, no kampanje reel
 when the drop has 0 offers).
@@ -96,6 +97,37 @@ def _slider_groups(cps):
     return groups
 
 
+def _forced_chip(iso: str) -> tuple[str | None, str | None]:
+    """Chip for an origin the OPERATOR picked, e.g. "PL" -> ("FRA POLEN", "PL").
+
+    Unknown code -> no chip. The flag set and the Norwegian names come from the
+    same table the automatic path uses, so a forced chip can never print a
+    country we have no flag for.
+    """
+    code = (iso or "").strip().upper()
+    name = regions.NAME_NO.get(code)
+    if not name:
+        return (None, None)
+    return (f"FRA {name}", code)
+
+
+def _chip_for(picks, origin: str) -> tuple[str | None, str | None]:
+    """Resolve the origin chip for one reel under the operator's setting.
+
+    origin is one of:
+      "none" (default) — never print an origin chip
+      "auto"           — the old behaviour: chip only when EVERY product in the
+                         reel shares one known origin (see _origin_chip)
+      "<ISO>"          — force this origin on every reel of the run
+    """
+    o = (origin or "none").strip()
+    if not o or o.lower() == "none":
+        return (None, None)
+    if o.lower() == "auto":
+        return _origin_chip(picks)
+    return _forced_chip(o)
+
+
 def _origin_chip(picks) -> tuple[str | None, str | None]:
     """Return (chip_text, iso) ONLY when EVERY product shown in the reel shares
     the same mappable origin; otherwise (None, None).
@@ -174,13 +206,19 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
                       title: str | None = None,
                       slider: bool = True,
                       slider_per_page: int = SLIDER_PER_PAGE,
-                      slider_max: int = SLIDER_MAX_ITEMS) -> DropResult:
+                      slider_max: int = SLIDER_MAX_ITEMS,
+                      origin: str = "none") -> DropResult:
     """Render the social assets for an edition.
 
     only_kampanje=True renders ONLY the offer (TILBUD) reel — used by the
     dashboard's "Lag tilbud annonse" button, which wants a focused offer ad
     (compare_at_price as førpris, product_type as ny pris), not the full montage
     + per-category set.
+
+    `origin` decides the origin chip (the flag pill on a reel), and defaults to
+    "none" — no chip unless the operator asks for one. "auto" restores the
+    old automatic behaviour (chip only when every product in the reel shares one
+    origin); an ISO-2 code like "PL" forces that origin on every reel of the run.
 
     slider=True (default) adds an EXTRA slider reel for every category holding
     more than `slider_per_page` products with photos — the normal 3-hero reel is
@@ -234,7 +272,7 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
 
             reel_picks = _cluster_picks(cps, 3)
             if reel_picks:
-                chip_text, iso = _origin_chip(reel_picks)
+                chip_text, iso = _chip_for(reel_picks, origin)
                 tasks.append((f"reel {cat}", R.reel_category,
                               ([_img_source(cp) for cp in reel_picks],),
                               {"heading": cat.upper(),
@@ -247,7 +285,7 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
                 pages = R.slider_pages(groups, per_page=slider_per_page,
                                        max_items=slider_max)
                 shown = [cp for pg in pages for cp in pg]
-                chip_text, iso = _origin_chip(shown)
+                chip_text, iso = _chip_for(shown, origin)
                 label = f"slider reel {cat} · {len(shown)} varer / {len(pages)} sider"
                 if len(shown) < n_usable:
                     # Say it out loud: a silent cap reads as "everything is in

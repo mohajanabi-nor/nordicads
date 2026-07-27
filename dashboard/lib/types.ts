@@ -48,6 +48,8 @@ export interface PickerProduct {
   inventory_quantity: number;
   in_stock: boolean;
   country_code: string | null;
+  /** Norwegian country name for country_code, as the reels print it ("POLEN"). */
+  country_name_no?: string | null;
   collections: string[];
   created_at: string | null;
   updated_at: string | null;
