@@ -140,6 +140,12 @@ def _render_tasks(tasks: list) -> list[Path]:
     Order of `tasks` is preserved in the returned asset list."""
     if not tasks:
         return []
+    # Say what is about to be rendered, before the slow part. The labels carry
+    # the category and, for a slider, how many varer / sider it covers — so the
+    # log answers "is my slider in this drop?" without hunting for file names.
+    print(f"[social] rendrer {len(tasks)} reels:")
+    for label, _fn, _a, _k in tasks:
+        print(f"    · {label}")
     if len(tasks) == 1:
         results = [_run_task(tasks[0])]
     else:

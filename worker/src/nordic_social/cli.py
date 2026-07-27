@@ -43,6 +43,32 @@ def _add_slider_flags(p: argparse.ArgumentParser) -> None:
     p.set_defaults(slider=True)
 
 
+def _print_worker_banner(args: argparse.Namespace) -> None:
+    """First line of every render: WHICH worker checkout is running, and which
+    commit it sits on.
+
+    The dashboard spawns the worker from WORKER_DIR, which can point at a
+    different clone than the one you just pulled — and then a fix you merged is
+    simply not in the code that runs, with nothing in the log to say so. This
+    line makes that visible instead of leaving you to infer it from the output
+    file names.
+    """
+    root = Path(__file__).resolve().parents[3]        # …/worker/src/nordic_social/cli.py -> repo
+    commit = "ukjent"
+    try:
+        import subprocess
+
+        res = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%h %cd",
+                              "--date=format:%Y-%m-%d %H:%M"],
+                             capture_output=True, text=True, timeout=5)
+        if res.returncode == 0 and res.stdout.strip():
+            commit = res.stdout.strip()
+    except Exception:  # noqa: BLE001 — never let a banner break a render
+        pass
+    slider = "på" if getattr(args, "slider", True) else "av"
+    print(f"[worker] kode: {root} @ {commit} | slider={slider}")
+
+
 def _week_slug(today: date | None = None) -> str:
     today = today or date.today()
     iso = today.isocalendar()
@@ -104,6 +130,7 @@ def _deny_terms(args: argparse.Namespace) -> set[str]:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
+    _print_worker_banner(args)
     week = week_label()
     slug = _week_slug()
     deny = _deny_terms(args)
@@ -213,6 +240,7 @@ def cmd_select(args: argparse.Namespace) -> int:
     ONLY those items. `--ids` (comma/space separated Shopify GIDs) is what the
     dashboard product-picker uses; positional terms remain for CLI convenience.
     Either selector works; ids win when both are given."""
+    _print_worker_banner(args)
     from concurrent.futures import ThreadPoolExecutor
 
     from nordic_catalogue.ai_category import classify_products
