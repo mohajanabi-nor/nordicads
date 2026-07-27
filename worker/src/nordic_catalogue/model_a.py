@@ -25,13 +25,25 @@ PRIORITY_SLUGS = ["frysevarer", "kjolevarer", "kjølevarer"]
 FALLBACK_CATEGORY = "Andre nyheter"
 
 # Structural / non-category collections in the real store (always excluded).
+# "Siste Ankomst" is the storefront's latest-arrivals smart collection: it says
+# WHEN a product landed, never what it is, so it can never be a category. It used
+# to be caught only by the share rule below — which silently stopped working on
+# small product sets (see AUTO_EXCLUDE_MIN_SAMPLE), so it is named explicitly.
 STRUCTURAL_EXCLUDE_SLUGS = {
-    "hovedside", "startside", "meny", "back-to-stock",
+    "hovedside", "startside", "meny", "back-to-stock", "siste-ankomst",
     "ultimate-search-bestseller-collection-do-not-delete",
 }
 # Any collection covering more than this share of ALL products is structural
 # (e.g. Hovedside ~99%, Siste Ankomst ~60%) -> auto-excluded as a category.
 AUTO_EXCLUDE_SHARE = 0.40
+# ...but ONLY when there are enough products for a share to mean anything. The
+# rule asks "does this collection cover most of the STORE?" — on a hand-picked
+# selection it instead asks "did the operator pick like with like?", and answers
+# yes: pick 10 ice creams and Frysevarer sits on 100% of them, so the one real
+# category is thrown away and everything falls back to "Andre nyheter". The
+# picker's `select --ids` path fetches only the chosen products, so it hit this
+# every single time.
+AUTO_EXCLUDE_MIN_SAMPLE = 50
 
 
 def slugify(text: str) -> str:
@@ -106,9 +118,16 @@ def _arrived(product: Product, previous_qty: dict[str, int], first_run: bool,
 
 
 def compute_excluded_slugs(products: list[Product], cfg: Config) -> set[str]:
-    """Slugs to exclude as categories: env list + structural + auto-share."""
+    """Slugs to exclude as categories: env list + structural + auto-share.
+
+    The auto-share rule needs a catalogue-sized sample to mean anything, so it is
+    skipped below AUTO_EXCLUDE_MIN_SAMPLE products — on a hand-picked selection
+    the shared collection IS the category, not noise.
+    """
     excluded = {slugify(s) for s in cfg.exclude_collections} | set(cfg.exclude_collections)
     excluded |= STRUCTURAL_EXCLUDE_SLUGS
+    if len(products) < AUTO_EXCLUDE_MIN_SAMPLE:
+        return excluded
     total = max(1, len(products))
     counts: dict[str, int] = {}
     for p in products:
@@ -139,13 +158,15 @@ def category_audit(products: list[Product], cfg: Config) -> dict[str, list[tuple
             counts[s] = counts.get(s, 0) + 1
             title_for.setdefault(s, title)
 
+    # Mirror compute_excluded_slugs: no share rule on a sample too small to judge.
+    share_rule = len(products) >= AUTO_EXCLUDE_MIN_SAMPLE
     kept: list[tuple[str, int, str]] = []
     excluded: list[tuple[str, int, str]] = []
     for s, c in sorted(counts.items(), key=lambda kv: -kv[1]):
         title = title_for[s]
         if s in deny:
             excluded.append((title, c, "deny-list"))
-        elif c / total > AUTO_EXCLUDE_SHARE:
+        elif share_rule and c / total > AUTO_EXCLUDE_SHARE:
             excluded.append((title, c, f"auto >{int(AUTO_EXCLUDE_SHARE * 100)}%"))
         else:
             kept.append((title, c, "category"))
