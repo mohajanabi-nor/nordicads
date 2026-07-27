@@ -7,7 +7,7 @@
  * for a few minutes, and do the window / search / limit filtering here in Node.
  * That makes the first load a single fetch and every window switch instant.
  *
- * Query params: ?since=<days>&limit=<n>&query=<term>
+ * Query params: ?since=<days>&limit=<n>&query=<term>&offers=1&stocked=1
  */
 import { runWorker } from "@/lib/worker";
 import type { PickerProduct } from "@/lib/types";
@@ -185,6 +185,15 @@ export async function GET(req: NextRequest) {
   // isFresh deliberately ignores — so campaign products would otherwise be
   // invisible here. This is the view for building a tilbud campaign.
   const offersOnly = sp.get("offers") === "1";
+  // "Lagt inn på lager" view: every product whose STOCK changed inside the
+  // window, with no freshness gate at all. isFresh deliberately requires either
+  // a recent created_at or a confirmed increase vs the last committed baseline —
+  // which hides the most common real case: a product created weeks ago (so not
+  // "new"), whose SKU the baseline has never seen (so restock_increase is null =
+  // "unknown"), that physically arrived today. Those 10 ice creams were invisible
+  // in every window. This view answers "what did we just take in", and leaves the
+  // judgement to the operator, who knows whether it was a delivery or a sale.
+  const stockedOnly = sp.get("stocked") === "1";
   // Let the operator force a refetch after editing prices in Shopify, instead of
   // waiting out the 5-minute cache TTL.
   const forceRefresh = sp.get("refresh") === "1";
@@ -206,6 +215,18 @@ export async function GET(req: NextRequest) {
       // Most recently edited first — the prices you just changed land on top.
       out = out.filter((p) => p.is_offer);
       out = [...out].sort((a, b) => ms(b.updated_at) - ms(a.updated_at));
+    } else if (stockedOnly && since && since > 0) {
+      // Stock touched inside the window, newest change first. A delivery lands
+      // as one batch of near-identical timestamps, so it arrives as one block;
+      // vendor/title break the ties inside that block.
+      const cutoff = windowCutoff(since);
+      out = out.filter((p) => ms(p.inventory_updated_at) >= cutoff);
+      out = [...out].sort(
+        (a, b) =>
+          ms(b.inventory_updated_at) - ms(a.inventory_updated_at) ||
+          (a.vendor || "").localeCompare(b.vendor || "") ||
+          a.title.localeCompare(b.title),
+      );
     } else if (since && since > 0) {
       const cutoff = windowCutoff(since);
       out = out.filter((p) => isFresh(p, cutoff, minRestock));

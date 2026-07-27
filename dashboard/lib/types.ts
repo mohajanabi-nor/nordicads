@@ -25,6 +25,19 @@ export interface StepEvent {
   status: "active" | "done";
 }
 
+/** Payload of any SSE frame from /api/generate or /api/select. Every field is
+ *  optional: which ones are set depends on the event name (log / step / done /
+ *  error), and the JSON comes off the wire, so nothing is guaranteed. */
+export interface RunEvent {
+  line?: string;
+  key?: string;
+  label?: string;
+  status?: StepEvent["status"];
+  drop?: string | null;
+  assets?: number;
+  message?: string;
+}
+
 /** A store product as served to the picker by /api/products. */
 export interface PickerProduct {
   id: string;

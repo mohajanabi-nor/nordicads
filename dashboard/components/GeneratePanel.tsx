@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import type { StepEvent } from "@/lib/types";
+import type { RunEvent, StepEvent } from "@/lib/types";
 
 /** Canonical pipeline order for the checklist (server emits a subset live). */
 const DISPLAY_STEPS: { key: string; label: string }[] = [
@@ -83,22 +83,23 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
       if (line.startsWith("event:")) event = line.slice(6).trim();
       else if (line.startsWith("data:")) data += line.slice(5).trim();
     }
-    let payload: any = {};
+    let payload: RunEvent = {};
     try {
       payload = JSON.parse(data);
     } catch {
       return;
     }
     if (event === "log") {
-      pushLog(payload.line);
-    } else if (event === "step") {
-      setSteps((prev) => ({ ...prev, [payload.key]: payload.status }));
+      pushLog(payload.line ?? "");
+    } else if (event === "step" && payload.key && payload.status) {
+      const { key, status } = payload;
+      setSteps((prev) => ({ ...prev, [key]: status }));
     } else if (event === "done") {
-      setResult({ drop: payload.drop, assets: payload.assets });
+      setResult({ drop: payload.drop ?? null, assets: payload.assets ?? 0 });
       setPhase("done");
       onComplete?.();
     } else if (event === "error") {
-      setError(payload.message);
+      setError(payload.message ?? "ukjent feil");
       setPhase("error");
     }
   }

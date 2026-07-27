@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import type { PickerProduct, ProductsResponse, StepEvent } from "@/lib/types";
+import type { PickerProduct, ProductsResponse, RunEvent, StepEvent } from "@/lib/types";
 
 const WINDOWS = [
   { days: 1, label: "I dag" },
@@ -67,6 +67,11 @@ export default function PickerPage() {
   const [windowDays, setWindowDays] = useState(14);
   const [minRestock, setMinRestock] = useState(5);
   const [offersOnly, setOffersOnly] = useState(false);
+  // "Lagt inn på lager": everything whose stock changed inside the window, with
+  // no new/restock gate. Combines WITH the day buttons (unlike the offer view,
+  // which ignores the window), so «Lagt inn på lager» + «Siste 2 dager» is
+  // literally "what did we take in the last two days".
+  const [stockedOnly, setStockedOnly] = useState(false);
   const [products, setProducts] = useState<PickerProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -86,15 +91,20 @@ export default function PickerPage() {
   const [runError, setRunError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async (days: number, minInc: number, opts?: { offers?: boolean; refresh?: boolean }) => {
+  const load = useCallback(async (days: number, minInc: number, opts?: { offers?: boolean; stocked?: boolean; refresh?: boolean }) => {
     setLoading(true);
     setLoadError(null);
     try {
       // Offer view ignores the freshness window entirely (a price change doesn't
       // make a product "new" or "restocked"), so campaign products stay visible.
+      // Stock view keeps the window but drops the new/restock gate: everything
+      // whose stock was touched in the window, so a delivery of products that
+      // are neither brand-new nor in the baseline still shows up.
       const qs = opts?.offers
         ? `offers=1&limit=500`
-        : `since=${days}&minRestock=${minInc}&limit=500`;
+        : opts?.stocked
+          ? `stocked=1&since=${days}&limit=500`
+          : `since=${days}&minRestock=${minInc}&limit=500`;
       const res = await fetch(`/api/products?${qs}${opts?.refresh ? "&refresh=1" : ""}`);
       const data: ProductsResponse & { error?: string } = await res.json();
       if (data.error) throw new Error(data.error);
@@ -108,8 +118,8 @@ export default function PickerPage() {
   }, []);
 
   useEffect(() => {
-    load(windowDays, minRestock, { offers: offersOnly });
-  }, [windowDays, minRestock, offersOnly, load]);
+    load(windowDays, minRestock, { offers: offersOnly, stocked: stockedOnly });
+  }, [windowDays, minRestock, offersOnly, stockedOnly, load]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -168,19 +178,21 @@ export default function PickerPage() {
       if (line.startsWith("event:")) event = line.slice(6).trim();
       else if (line.startsWith("data:")) data += line.slice(5).trim();
     }
-    let payload: any = {};
+    let payload: RunEvent = {};
     try {
       payload = JSON.parse(data);
     } catch {
       return;
     }
-    if (event === "log") pushLog(payload.line);
-    else if (event === "step") setSteps((prev) => ({ ...prev, [payload.key]: payload.status }));
-    else if (event === "done") {
-      setResult({ drop: payload.drop, assets: payload.assets });
+    if (event === "log") pushLog(payload.line ?? "");
+    else if (event === "step" && payload.key && payload.status) {
+      const { key, status } = payload;
+      setSteps((prev) => ({ ...prev, [key]: status }));
+    } else if (event === "done") {
+      setResult({ drop: payload.drop ?? null, assets: payload.assets ?? 0 });
       setPhase("done");
     } else if (event === "error") {
-      setRunError(payload.message);
+      setRunError(payload.message ?? "ukjent feil");
       setPhase("error");
     }
   }
@@ -250,6 +262,8 @@ export default function PickerPage() {
             <button
               key={w.days}
               onClick={() => {
+                // The window applies to the stock view too, so only the offer
+                // view (which has no window) is cleared here.
                 setOffersOnly(false);
                 setWindowDays(w.days);
               }}
@@ -263,10 +277,29 @@ export default function PickerPage() {
               {w.label}
             </button>
           ))}
+          {/* Stock view: everything whose lager changed inside the window — the
+              only view that catches a delivery of products that are neither new
+              nor known to the restock baseline. */}
+          <button
+            onClick={() => {
+              setOffersOnly(false);
+              setStockedOnly((v) => !v);
+            }}
+            disabled={loading}
+            title="Alle varer der lageret er endret i valgt tidsvindu — uavhengig av nyhet/restock-baseline"
+            className={`ml-1 rounded-lg px-3 py-1.5 text-sm font-bold transition ${
+              stockedOnly ? "bg-sky-600 text-white" : "bg-sky-50 text-sky-700 hover:bg-sky-100"
+            }`}
+          >
+            Lagt inn på lager
+          </button>
           {/* Offer view: ignores the freshness window, so products you just
               price-changed in Shopify show up even though they aren't new. */}
           <button
-            onClick={() => setOffersOnly(true)}
+            onClick={() => {
+              setStockedOnly(false);
+              setOffersOnly(true);
+            }}
             disabled={loading}
             title="Alle varer med førpris (tilbud) — uavhengig av tidsvindu"
             className={`ml-1 rounded-lg px-3 py-1.5 text-sm font-bold transition ${
@@ -276,7 +309,7 @@ export default function PickerPage() {
             Tilbud
           </button>
           <button
-            onClick={() => load(windowDays, minRestock, { offers: offersOnly, refresh: true })}
+            onClick={() => load(windowDays, minRestock, { offers: offersOnly, stocked: stockedOnly, refresh: true })}
             disabled={loading}
             title="Hent på nytt fra Shopify (etter at du har endret priser)"
             className="ml-1 rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/70 transition hover:bg-line/40 disabled:opacity-40"
@@ -317,6 +350,15 @@ export default function PickerPage() {
           <>
             Viser <span className="font-semibold text-ink">alle varer med førpris (tilbud)</span> —
             uavhengig av tidsvindu, nyest endret først. Endret du priser i Shopify nå? Trykk{" "}
+            <span className="font-semibold text-ink">↻ Oppdater</span>.
+          </>
+        ) : stockedOnly ? (
+          <>
+            Viser <span className="font-semibold text-ink">alle varer der lageret er endret</span> i
+            vinduet, nyeste lagerendring først — uavhengig av om varen er ny eller finnes i
+            restock-baselinen. Her ligger varemottaket ditt, også varer som ble opprettet for uker
+            siden. <span className="font-semibold text-ink">NB:</span> et salg endrer også lageret,
+            så sjekk antallet før du velger. Nettopp lagt inn? Trykk{" "}
             <span className="font-semibold text-ink">↻ Oppdater</span>.
           </>
         ) : (
@@ -475,6 +517,8 @@ export default function PickerPage() {
             </>
           ) : offersOnly ? (
             <p>Ingen varer med førpris. Sett «Compare-at price» i Shopify, og trykk ↻ Oppdater.</p>
+          ) : stockedOnly ? (
+            <p>Ingen lagerendringer i dette vinduet. Prøv et lengre vindu, eller trykk ↻ Oppdater hvis du nettopp la inn varer.</p>
           ) : (
             <p>Ingen produkter i dette vinduet.</p>
           )}
@@ -527,7 +571,9 @@ export default function PickerPage() {
                     </span>
                   </div>
                   <p className="text-[10px] text-mute/70">
-                    {sig?.kind === "restock"
+                    {/* In the stock view the lager date IS the sort key, so show
+                        it on every card — «lagt til» would be the wrong date. */}
+                    {stockedOnly || sig?.kind === "restock"
                       ? `lager oppd. ${fmtDate(p.inventory_updated_at)}`
                       : `lagt til ${fmtDate(p.created_at)}`}
                   </p>
