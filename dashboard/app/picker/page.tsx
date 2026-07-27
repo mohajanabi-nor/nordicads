@@ -74,6 +74,9 @@ export default function PickerPage() {
   const [hideOos, setHideOos] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [campaignTitle, setCampaignTitle] = useState("");
+  // Extra slider reel per category (pages through ALL picks, not just 3). The
+  // normal 3-vare reel is rendered either way — this only adds a file.
+  const [slider, setSlider] = useState(true);
 
   // ---- render run (SSE) state ----
   const [phase, setPhase] = useState<RunPhase>("idle");
@@ -194,7 +197,12 @@ export default function PickerPage() {
       const res = await fetch("/api/select", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: Array.from(selected), mode, title: campaignTitle.trim() }),
+        body: JSON.stringify({
+          ids: Array.from(selected),
+          mode,
+          title: campaignTitle.trim(),
+          slider,
+        }),
       });
       if (!res.body) throw new Error("Ingen strøm fra server");
       const reader = res.body.getReader();
@@ -336,6 +344,25 @@ export default function PickerPage() {
           />
           <span className="text-[11px] text-mute">
             La stå tom for standardteksten «Nye varer denne uken». Vises med store bokstaver.
+          </span>
+        </label>
+
+        {/* Slider-reel: the 3-vare reel is always made; this adds an extra reel
+            that pages through every pick in the category (all 12 isene, not 3). */}
+        <label className="mt-4 flex cursor-pointer items-start gap-2 border-t border-line pt-4">
+          <input
+            type="checkbox"
+            checked={slider}
+            onChange={(e) => setSlider(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-orange"
+          />
+          <span className="text-sm text-ink">
+            <span className="font-semibold">Lag også slider-reel</span> (viser ALLE
+            valgte varer, 3 om gangen)
+            <span className="mt-0.5 block text-[11px] text-mute">
+              Vanlig 3-vare reel lages uansett. Slideren kommer i tillegg, én per
+              kategori med mer enn 3 varer — maks 24 varer per slider (~21 sek).
+            </span>
           </span>
         </label>
       </div>

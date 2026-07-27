@@ -17,14 +17,16 @@ function fmtDate(iso: string): string {
   }
 }
 
-/** Pretty reel name: strip slug prefix + extension. */
+/** Pretty reel name: strip slug prefix + extension. Slider reels (which page
+ *  through every product in the category, not just 3) are marked as such — the
+ *  two files for one category are otherwise identically named. */
 function reelLabel(file: string): string {
-  return file
-    .replace(/\.mp4$/i, "")
-    .replace(/^[a-z0-9]+-\d{4}_/i, "")
-    .replace(/^reel_/, "")
+  const base = file.replace(/\.mp4$/i, "").replace(/^[a-z0-9]+-\d{4}_/i, "");
+  const label = base
+    .replace(/^(reel|slider)_/, "")
     .replace(/[-_]/g, " ")
     .trim();
+  return /^slider_/.test(base) ? `${label} · alle varer` : label;
 }
 
 function assetUrl(dir: string, file: string) {

@@ -12,6 +12,21 @@ FPS = 24
 N_FRAMES = 120          # standard reel: 5s
 N_FRAMES_MONTAGE = 192  # montage reel: 8s
 
+# --- slider reel (many SKUs in ONE reel, paged) ---
+# A category reel shows at most 3 heroes at a readable size, so a drop with 12
+# ice creams used to ship 3 of them. The slider keeps the same 3-up beat but
+# SLIDES through page after page, so every SKU is shown. Timings are per page:
+# the first page keeps the standard entrance (pop-in + gloss), the rest slide.
+SLIDER_PER_PAGE = 3     # heroes per page (3 = the proven fan layout)
+SLIDER_INTRO = 84       # frames page 1 holds (entrance + gloss + a beat) = 3.5s
+SLIDER_HOLD = 42        # frames every later page holds = 1.75s
+SLIDER_TRANS = 14       # frames of horizontal slide between pages ~0.6s
+SLIDER_TAIL = 26        # extra frames on the last page so the CTA lands
+# Hard cap on products per slider reel: 24 = 8 pages ≈ 21s. Beyond this a reel
+# stops being an ad and nobody watches to the end; the caller reports the rest.
+SLIDER_MAX_ITEMS = 24
+SLIDER_DOTS_Y = 1526    # page-dot row, between the products and the CTA
+
 # --- palette (RGB) ---
 CREAM = (247, 240, 222)       # background
 ORANGE = (239, 120, 28)       # primary accent / CTA

@@ -6,6 +6,10 @@ Optional features: origin chip (real ISO flag), kampanje price block + sticker.
 Thin variant wrappers (`reel_nyhet`, `reel_choc`, `reel_snacks`,
 `reel_restock`, `reel_kampanje`) set each prototype's exact constants.
 
+`reel_slider` covers the "we got 12 new ice creams, not 3" case: same skeleton,
+but it slides through page after page of products so EVERY SKU is shown in one
+reel (see the slider section below).
+
 Requires imageio + ffmpeg (libx264) for encoding.
 """
 from __future__ import annotations
@@ -21,6 +25,8 @@ from PIL import Image, ImageDraw
 from .constants import (
     W, H, FPS, N_FRAMES, N_FRAMES_MONTAGE, CREAM, ORANGE, PEACH, AMBER_DEEP,
     INK, MUTE, WHITE, CTA_PRIMARY, CTA_WEB, SUBLINE_DEFAULT,
+    SLIDER_PER_PAGE, SLIDER_INTRO, SLIDER_HOLD, SLIDER_TRANS, SLIDER_TAIL,
+    SLIDER_MAX_ITEMS, SLIDER_DOTS_Y,
 )
 from .render import (
     font, tracked, logo_mark, frame_layer, prep, shadow, soft_shadow, fit_heading,
@@ -180,9 +186,37 @@ def _encode_mp4(frames, out: Union[str, Path], crf: int = 18) -> Path:
     imageio.mimwrite(
         out, frames, fps=FPS, codec="libx264", macro_block_size=8,
         pixelformat="yuv420p",
-        output_params=["-crf", str(crf), "-preset", "veryfast", "-profile:v", "high",
-                       "-movflags", "+faststart"],
+        output_params=_X264_PARAMS(crf),
     )
+    return out
+
+
+def _X264_PARAMS(crf: int) -> list:
+    return ["-crf", str(crf), "-preset", "veryfast", "-profile:v", "high",
+            "-movflags", "+faststart"]
+
+
+def _encode_mp4_stream(frames, out: Union[str, Path], crf: int = 18) -> Path:
+    """Same encoder as `_encode_mp4`, but consumes an ITERATOR of frames and
+    writes each one straight to ffmpeg instead of holding the whole reel in RAM.
+
+    Identical output; it only matters for length. A 5 s reel is 120 frames
+    (~750 MB as RGB arrays) which is fine to buffer, but a slider paging through
+    24 SKUs is ~500 frames — buffering that would cost gigabytes, so the slider
+    streams."""
+    import imageio.v2 as imageio
+
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    writer = imageio.get_writer(
+        out, fps=FPS, codec="libx264", macro_block_size=8,
+        pixelformat="yuv420p", output_params=_X264_PARAMS(crf),
+    )
+    try:
+        for fr in frames:
+            writer.append_data(fr)
+    finally:
+        writer.close()
     return out
 
 
@@ -343,11 +377,14 @@ def reel_category(sources: Sequence, heading: str, out: Union[str, Path],
     if n >= 3:
         style = ReelStyle(heading=heading, entrance=220, shine_start=50,
                           subline_y=1784, subline_start=68, cta_y=1600, cta_start=56)
-        prepared = [prep_safe(sources[0], 440, -11), prep_safe(sources[1], 440, 11),
-                    prep_safe(sources[2], 560, 0)]
-        specs = _placed_specs(prepared, bases=[1330, 1330, 1360],
-                              starts=[10, 26, 18], phases=[0.0, math.pi, math.pi / 2],
-                              shine_idx=2)
+        # left / CENTRE HERO / right — the prototype snacks fan. `_placed_specs`
+        # lays products out left-to-right in the order given, so the tall hero
+        # must be the middle argument to land in the middle of the fan.
+        prepared = [prep_safe(sources[0], 440, -11), prep_safe(sources[2], 560, 0),
+                    prep_safe(sources[1], 440, 11)]
+        specs = _placed_specs(prepared, bases=[1330, 1360, 1330],
+                              starts=[10, 18, 26], phases=[0.0, math.pi / 2, math.pi],
+                              shine_idx=1)
         if chip:
             chip = (chip_text, 300, 720, 44, iso)   # top-left, clear of the fan
     elif n == 2:
@@ -371,7 +408,8 @@ def reel_category(sources: Sequence, heading: str, out: Union[str, Path],
     return build_reel(specs, out, style, chip=chip)
 
 
-def _placed_specs(prepared, bases, starts, phases, shine_idx, cx=W // 2):
+def _placed_specs(prepared, bases, starts, phases, shine_idx, cx=W // 2,
+                  drop_small: bool = True):
     """Turn prepared (img, failed) products into reel specs that always show every
     product distinctly. The rules, in order:
 
@@ -384,6 +422,8 @@ def _placed_specs(prepared, bases, starts, phases, shine_idx, cx=W // 2):
          (fit_cluster_width) — never widen the overlap to make room.
       3) If a product would still be too small to read (< MIN_LEGIBLE_W), drop the
          narrowest one and re-lay-out — fewer, legible products beat tiny ones.
+         (`drop_small=False` turns this off: the slider reel promises to show
+         every SKU, so it shrinks the page rather than silently dropping an item.)
       4) Z-order: draw the LARGEST product at the back and smaller ones in front,
          so a small product is never swallowed by a big neighbour.
 
@@ -396,8 +436,14 @@ def _placed_specs(prepared, bases, starts, phases, shine_idx, cx=W // 2):
                          "start": starts[i], "phase": phases[i], "shine": i == shine_idx})
 
     def layout(es):
-        items = [[e["orig"].copy(), int(cx - e["orig"].width // 2),
-                  int(e["base"] - e["orig"].height), int(e["base"])] for e in es]
+        # The +2*i seed keeps the initial centres strictly increasing by index, so
+        # spread_no_overlap's centre sort lays products out LEFT-TO-RIGHT in the
+        # order given. (Without it, odd/even pixel widths shifted a centre by
+        # ±0.5 px and the order — including where the hero landed — flipped on
+        # nothing but a product's width parity.)
+        items = [[e["orig"].copy(), int(cx - e["orig"].width // 2) + 2 * i,
+                  int(e["base"] - e["orig"].height), int(e["base"])]
+                 for i, e in enumerate(es)]
         if len(items) > 1:
             spread_no_overlap(items, cx)      # kill overlap (<=13%), centre
             distribute_evenly(items, cx)      # breathe out into spare width, even gaps
@@ -406,7 +452,8 @@ def _placed_specs(prepared, bases, starts, phases, shine_idx, cx=W // 2):
 
     items = layout(entries)
     # (3) Drop the narrowest product while the smallest is below the legible floor.
-    while len(entries) > 1 and min(it[0].width for it in items) < MIN_LEGIBLE_W:
+    while (drop_small and len(entries) > 1
+           and min(it[0].width for it in items) < MIN_LEGIBLE_W):
         narrow_i = min(range(len(entries)), key=lambda k: entries[k]["orig"].width)
         entries.pop(narrow_i)
         items = layout(entries)
@@ -423,6 +470,288 @@ def _placed_specs(prepared, bases, starts, phases, shine_idx, cx=W // 2):
         ccx = int(x + img.width // 2)
         specs.append((img, ccx, base, e["start"], e["phase"], e["shine"]))
     return specs
+
+
+# --------------------------------------------------------------------------- #
+# slider reel — page through MANY SKUs in ONE reel                             #
+# --------------------------------------------------------------------------- #
+# The category reel shows at most 3 heroes, because 3 is the most you can show
+# at a readable size in 9:16. So a week with 12 new ice creams shipped a reel
+# with 3 of them. The slider keeps that exact 3-up beat and SLIDES to the next
+# page of 3, and the next — every SKU gets its own moment, at full size, in one
+# reel. Page 1 keeps the standard entrance so the reel still opens like the rest
+# of the drop; later pages slide in from the right. Dots under the products show
+# how many pages are left.
+
+# Per-page fan geometry: (heights, tilts, baselines, hero index). The 3-up entry
+# is the proven snacks fan; the 1/2 entries keep the same baseline band so a
+# short last page doesn't jump.
+_SLIDER_FAN = {
+    1: ([620], [-4], [1360], 0),
+    2: ([540, 470], [-7, 8], [1310, 1360], 0),
+    3: ([440, 560, 440], [-11, 0, 11], [1330, 1360, 1330], 1),
+}
+
+
+def _fan(n: int):
+    """Fan geometry for a page of n products (falls back to an even row)."""
+    if n in _SLIDER_FAN:
+        return _SLIDER_FAN[n]
+    return ([400] * n, [((i % 2) * 2 - 1) * 8 for i in range(n)], [1340] * n, n // 2)
+
+
+def slider_pages(groups: Sequence[Sequence], per_page: int = SLIDER_PER_PAGE,
+                 max_items: int = SLIDER_MAX_ITEMS) -> list[list]:
+    """Chunk like-item groups into slider pages of at most ``per_page`` items.
+
+    ``groups`` is a list of already-coherent groups (one per varetype cluster,
+    say); pass ``[items]`` for a plain flat list. A page never straddles two
+    groups, so "IS I BEGER" and "ISPINNER" don't share a page even though both
+    ride the same reel. The total is capped at ``max_items`` (a 21 s reel) —
+    beyond that nobody watches to the end — and the caller can compare the page
+    total against its input to report what didn't fit.
+    """
+    per_page = max(1, per_page)
+    pages: list[list] = []
+    used = 0
+    for group in groups:
+        items = [it for it in group if it is not None]
+        for i in range(0, len(items), per_page):
+            if used >= max_items:
+                return pages
+            chunk = items[i:i + per_page][:max_items - used]
+            if chunk:
+                pages.append(list(chunk))
+                used += len(chunk)
+    return pages
+
+
+def _crop_layer(layer: Image.Image):
+    """Trim a full-canvas layer to its content: (image|None, (x, y)).
+
+    Slider pages are composited every frame at a horizontal offset, so shipping
+    the transparent 1080x1920 canvas around would cost far more than it draws.
+    """
+    box = layer.getbbox()
+    if not box:
+        return None, (0, 0)
+    return layer.crop(box), (box[0], box[1])
+
+
+def _paste_shifted(base: Image.Image, layer: Optional[Image.Image], pos, dx: int,
+                   a: float = 1.0) -> None:
+    """Composite a (cropped) layer at ``pos`` shifted ``dx`` px horizontally,
+    clipping whatever falls outside the frame — that's how a page slides off."""
+    if layer is None or a <= 0:
+        return
+    x, y = pos[0] + dx, pos[1]
+    sx = max(0, -x)                       # first visible column of the layer
+    dst_x = max(0, x)
+    w = min(layer.width - sx, W - dst_x)
+    h = min(layer.height, H - y)
+    if w <= 0 or h <= 0:
+        return
+    crop = layer.crop((sx, 0, sx + w, h)) if (sx or w != layer.width or h != layer.height) else layer
+    paste_a(base, crop, (dst_x, y), a)
+
+
+@dataclass
+class _SliderPage:
+    """One page of the slider, pre-rendered so a frame is 2-3 composites.
+
+    Split around the hero so the gloss sweep can be re-run on the hero alone
+    without re-compositing (or double-compositing) the rest of the page.
+    """
+    specs: list                                  # for page 1's animated entrance
+    pre: Optional[Image.Image] = None            # shadows + products behind the hero
+    pre_pos: tuple = (0, 0)
+    hero: Optional[Image.Image] = None
+    hero_pos: tuple = (0, 0)
+    post: Optional[Image.Image] = None           # products in front of the hero
+    post_pos: tuple = (0, 0)
+
+
+def _build_page(sources: Sequence) -> _SliderPage:
+    """Prepare one page: cutouts -> fan layout -> pre-composited layers."""
+    n = len(sources)
+    heights, tilts, bases, hero_slot = _fan(n)
+    prepared = [prep_safe(s, heights[i], tilts[i]) for i, s in enumerate(sources)]
+    specs = _placed_specs(
+        prepared, bases=bases,
+        starts=[10 + i * 8 for i in range(n)],
+        phases=[(i * math.pi / 2) % (2 * math.pi) for i in range(n)],
+        shine_idx=hero_slot, drop_small=False,   # a slider never drops a SKU
+    )
+
+    hero_i = next((i for i, sp in enumerate(specs) if sp[5]), len(specs) - 1)
+    pre = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    post = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    for prod, cx, base_y, _st, _ph, _sh in specs:     # every shadow under everything
+        pre.alpha_composite(soft_shadow(cx, int(base_y), prod.width))
+    page = _SliderPage(specs=specs)
+    for i, (prod, cx, base_y, _st, _ph, _sh) in enumerate(specs):
+        xy = (int(cx - prod.width // 2), int(base_y - prod.height))
+        if i < hero_i:
+            pre.alpha_composite(prod, xy)
+        elif i == hero_i:
+            page.hero, page.hero_pos = prod, xy
+        else:
+            post.alpha_composite(prod, xy)
+    page.pre, page.pre_pos = _crop_layer(pre)
+    page.post, page.post_pos = _crop_layer(post)
+    return page
+
+
+def _dots_layer(n_pages: int, active: int) -> tuple[Optional[Image.Image], tuple]:
+    """Page indicator: n small dots, the active one filled orange and wider."""
+    if n_pages < 2:
+        return None, (0, 0)
+    r, gap, aw = 7, 30, 26                       # radius, spacing, active pill width
+    widths = [aw if i == active else 2 * r for i in range(n_pages)]
+    total = sum(widths) + gap * (n_pages - 1)
+    L = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(L)
+    x = W / 2 - total / 2
+    for i, w in enumerate(widths):
+        y0, y1 = SLIDER_DOTS_Y - r, SLIDER_DOTS_Y + r
+        if i == active:
+            d.rounded_rectangle([x, y0, x + w, y1], radius=r, fill=ORANGE + (255,))
+        else:
+            d.ellipse([x, y0, x + w, y1], fill=ORANGE + (85,))
+        x += w + gap
+    return _crop_layer(L)
+
+
+def reel_slider(pages: Sequence[Sequence], heading: str, out: Union[str, Path],
+                iso: Optional[str] = None, chip_text: Optional[str] = None,
+                subline: Optional[str] = SUBLINE_DEFAULT) -> Path:
+    """Render ONE reel that slides through every page of products.
+
+    ``pages`` is a list of pages, each a list of image paths/PIL images (build it
+    with `slider_pages`). Everything else — brand header, amber frame, disc,
+    entrance, gloss, CTA — is exactly the 3-up category reel, so a slider sits
+    next to the other reels in a drop without looking like a different template.
+
+    Frames are streamed to the encoder (`_encode_mp4_stream`), so an 8-page
+    slider costs the same memory as a 1-page one.
+    """
+    pages = [list(p) for p in pages if len(p) > 0]
+    if not pages:
+        raise ValueError("reel_slider needs at least one page of products")
+    P = len(pages)
+
+    style = ReelStyle(heading=heading, entrance=220, shine_start=50,
+                      subline_text=subline, subline_y=1784, subline_start=68,
+                      cta_y=1600, cta_start=56)
+
+    base = Image.new("RGBA", (W, H), CREAM + (255,))
+    d = ImageDraw.Draw(base)
+    d.ellipse(list(style.circ_outer), fill=PEACH)
+    d.ellipse(list(style.circ_inner), fill=ORANGE)
+    ix0, iy0, ix1, iy1 = style.circ_inner
+    base.alpha_composite(center_glow((ix0 + ix1) // 2, (iy0 + iy1) // 2,
+                                     int(0.62 * (ix1 - ix0))))
+    base.alpha_composite(frame_layer())
+    vign = vignette()
+
+    logoL = _logo_layer(style)
+    headL = _heading_layer(style, style.heading)
+    ctaL = _cta_layer(style)
+    subL = _subline_layer(style.subline_text, style.subline_y) if style.subline_text else None
+    chipL = chip_layer(chip_text, iso) if (chip_text and iso) else None
+    chip_cx, chip_cy, chip_start = 300, 720, 44
+
+    built = [_build_page(p) for p in pages]
+    dots = [_dots_layer(P, i) for i in range(P)]
+
+    # ---- timeline: page 1 holds through its entrance, then slide/hold pairs ----
+    # plan[f] = (page_a, page_b|None, slide progress) + hold_start per page, so a
+    # page's gloss sweep can be timed from the moment it lands.
+    plan: list[tuple] = []
+    hold_start = [0] * P
+    plan.extend([(0, None, 0.0)] * SLIDER_INTRO)
+    for k in range(1, P):
+        for i in range(SLIDER_TRANS):
+            plan.append((k - 1, k, (i + 1) / SLIDER_TRANS))
+        hold_start[k] = len(plan)
+        n_hold = SLIDER_HOLD + (SLIDER_TAIL if k == P - 1 else 0)
+        plan.extend([(k, None, 0.0)] * n_hold)
+    if P == 1:
+        plan.extend([(0, None, 0.0)] * SLIDER_TAIL)
+
+    def draw_page(img: Image.Image, k: int, dx: int, f: int) -> None:
+        pg = built[k]
+        _paste_shifted(img, pg.pre, pg.pre_pos, dx)
+        hero = pg.hero
+        if hero is not None:
+            # gloss sweep, 30 frames from just after the page lands (page 1 uses
+            # the standard shine_start so it matches every other reel in the drop)
+            ss = style.shine_start if k == 0 else hold_start[k] + 6
+            if ss <= f <= ss + 30:
+                hero = shine(hero, (f - ss) / 30.0)
+            _paste_shifted(img, hero, pg.hero_pos, dx)
+        _paste_shifted(img, pg.post, pg.post_pos, dx)
+
+    def frames():
+        for f, (pa, pb, prog) in enumerate(plan):
+            img = base.copy()
+            paste_a(img, logoL, (0, 0), ease(f / 12))
+            paste_a(img, headL, (0, 0), ease((f - 6) / 14))
+
+            if f < SLIDER_INTRO:
+                # page 1 enters product-by-product, exactly like build_reel: all
+                # shadows first, then the products, so the last intro frame is
+                # pixel-identical to the pre-rendered layer we slide from here on.
+                specs = built[0].specs
+                for prod, cx, base_y, st, _ph, _sh in specs:
+                    a = ease((f - st) / 24.0)
+                    if a > 0:
+                        paste_a(img, soft_shadow(cx, int(base_y), prod.width), (0, 0), a)
+                for prod, cx, base_y, st, _ph, sh in specs:
+                    t = (f - st) / 24.0
+                    a = ease(t)
+                    if a <= 0:
+                        continue
+                    yoff = (1 - out_back(t, 1.30)) * style.entrance
+                    pim = prod
+                    ss, se = style.shine_start, style.shine_start + 30
+                    if sh and ss <= f <= se:
+                        pim = shine(pim, (f - ss) / 30.0)
+                    if t < 1.0:
+                        sc = spring_pop(t)
+                        pim = pim.resize((max(1, int(pim.width * sc)),
+                                          max(1, int(pim.height * sc))), Image.LANCZOS)
+                    paste_a(img, pim, (int(cx - pim.width // 2),
+                                       int(base_y - pim.height + yoff)), a)
+            elif pb is None:
+                draw_page(img, pa, 0, f)
+            else:
+                e = ease(prog)
+                dx = -int(W * e)
+                draw_page(img, pa, dx, f)          # current page leaves to the left
+                draw_page(img, pb, dx + W, f)      # next page follows it in
+
+            active = pb if (pb is not None and prog >= 0.5) else pa
+            dot, dot_pos = dots[active]
+            if dot is not None:
+                paste_a(img, dot, dot_pos, ease((f - style.cta_start) / 16))
+
+            if chipL is not None:
+                tt = (f - chip_start) / 16.0
+                if tt > 0:
+                    s = max(0.05, popscale(tt))
+                    cc = chipL.resize((int(chipL.width * s), int(chipL.height * s)))
+                    paste_a(img, cc, (chip_cx - cc.width // 2, chip_cy - cc.height // 2),
+                            ease((f - chip_start) / 10.0))
+
+            paste_a(img, ctaL, (0, int((1 - ease((f - style.cta_start) / 16)) * 150)),
+                    ease((f - style.cta_start) / 16))
+            if subL is not None:
+                paste_a(img, subL, (0, 0), ease((f - style.subline_start) / 14))
+            img.alpha_composite(vign)
+            yield np.asarray(img.convert("RGB"))
+
+    return _encode_mp4_stream(frames(), out, crf=18)
 
 
 def _vgrad(height: int, top_op: int, bottom_op: int, flip: bool = False) -> Image.Image:

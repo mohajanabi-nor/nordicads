@@ -20,6 +20,7 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
   const [phase, setPhase] = useState<Phase>("idle");
   const [mock, setMock] = useState(false);
   const [commit, setCommit] = useState(true);
+  const [slider, setSlider] = useState(true);
   const [steps, setSteps] = useState<Record<string, StepEvent["status"]>>({});
   const [logs, setLogs] = useState<string[]>([]);
   const [result, setResult] = useState<{ drop: string | null; assets: number } | null>(null);
@@ -47,7 +48,7 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mock, commit }),
+        body: JSON.stringify({ mock, commit, slider }),
         signal: ac.signal,
       });
       if (!res.body) throw new Error("Ingen strøm fra server");
@@ -132,6 +133,12 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
         <label className={`flex items-center gap-2 ${mock ? "opacity-40" : ""}`}>
           <input type="checkbox" checked={commit} disabled={running || mock} onChange={(e) => setCommit(e.target.checked)} className="accent-orange" />
           <span className="text-ink/80">Lagre baseline (commit snapshot)</span>
+        </label>
+        {/* Extra slider reel per category — the normal 3-vare reels are rendered
+            either way, this only adds one file per category with >3 varer. */}
+        <label className="flex items-center gap-2" title="Én ekstra reel per kategori som blar gjennom ALLE varene, 3 om gangen (maks 24)">
+          <input type="checkbox" checked={slider} disabled={running} onChange={(e) => setSlider(e.target.checked)} className="accent-orange" />
+          <span className="text-ink/80">Slider-reel i tillegg (alle varer)</span>
         </label>
       </div>
 

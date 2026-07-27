@@ -6,9 +6,11 @@
  * named steps, and forward both step transitions and raw log lines. Generation
  * runs entirely in the worker process — never in this request's thread.
  *
- * Body (JSON): { mock?: boolean, commit?: boolean }
+ * Body (JSON): { mock?: boolean, commit?: boolean, slider?: boolean }
  *   mock=true  → offline prototype data (commits nothing)
  *   commit=false (real only) → pass --no-commit (skip the baseline)
+ *   slider=false → pass --no-slider (skip the EXTRA per-category slider reel;
+ *     the normal 3-vare category reels are rendered either way)
  */
 import { spawnWorker, OUTPUT_DIR } from "@/lib/worker";
 import path from "node:path";
@@ -29,7 +31,7 @@ const STEPS: { key: string; label: string; match: (l: string) => boolean }[] = [
 ];
 
 export async function POST(req: Request) {
-  let body: { mock?: boolean; commit?: boolean } = {};
+  let body: { mock?: boolean; commit?: boolean; slider?: boolean } = {};
   try {
     body = await req.json();
   } catch {
@@ -38,6 +40,7 @@ export async function POST(req: Request) {
   const args = ["generate"];
   if (body.mock) args.push("--mock");
   else if (body.commit === false) args.push("--no-commit");
+  if (body.slider === false) args.push("--no-slider");
 
   const encoder = new TextEncoder();
 

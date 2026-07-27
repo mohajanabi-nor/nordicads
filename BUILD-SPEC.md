@@ -173,6 +173,12 @@ til katalogen/nettbutikken.
 2. **Kategori-reel** – én per ikke-tom kategori. Viser **alle nyhetene** i kategorien,
    **3 per scene** over flere scener (rangering = rekkefølge, ikke utvalg). Restock-varer
    med «TILBAKE PÅ LAGER»-merke.
+   **Implementert som to filer per kategori:** `*_reel_<kategori>.mp4` (én scene med de
+   3 sterkeste – uendret) og, når kategorien har mer enn 3 varer med bilde,
+   `*_slider_<kategori>.mp4` – **slider-reelen**, som blar gjennom alle varene 3 om
+   gangen (side-prikker under produktene, maks 24 varer ≈ 21 sek). Sidene fylles fra
+   én varetype-klynge om gangen, så en side aldri blander ispinner og beger.
+   Skrus av med `--no-slider` / avkrysningsboksen i dashboardet.
 3. **«Tilbake på lager»-reel** – for etterspurte restocks (ferskvarer som Twaróg). Egen
    urgency-linje, f.eks. «Fersk vare – bestill før den er borte».
 4. **Merke-drop-reel** – når ett merke har mange nye varianter (f.eks. 10 Milka):

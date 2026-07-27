@@ -8,6 +8,9 @@ through the SAME ML cutout pipeline (render.cutout / render.prep).
 Outputs per drop (ALL mp4, from REAL product photos):
   - montage reel counting up to the number of new arrivals
   - one category reel per category (1/2/3-product hero layout, cluster-coherent)
+  - PLUS, for every category with more than 3 products with photos, a SLIDER reel
+    that pages through all of them 3 at a time (12 new ice creams ship as 12, not
+    as the top 3). The 3-hero reel above is still rendered — the slider is extra.
   - a kampanje reel when TILBUD products (compare_at_price) exist
   - origin chip per category only when a single origin clearly dominates
     (never guess: mixed/None origins → no chip)
@@ -26,6 +29,7 @@ from nordic_catalogue.models import ClassifiedProduct, State
 from nordic_catalogue.model_a import Edition
 from nordic_catalogue import regions
 
+from .constants import SLIDER_MAX_ITEMS, SLIDER_PER_PAGE
 from .render import cutout, prep_safe
 from . import reel as R
 
@@ -76,6 +80,20 @@ def _cluster_picks(cps, n):
         if len(best) >= n:
             break
     return best
+
+
+def _slider_groups(cps):
+    """Usable (has a photo) products per varetype cluster, edition order kept.
+
+    Feeds `reel.slider_pages`: a slider page is filled from ONE cluster, so a
+    page never mixes ispinner with beger even though both ride the same reel.
+    """
+    groups = []
+    for _lbl, group in _clusters(cps):
+        usable = [cp for cp in group if _img_source(cp)]
+        if usable:
+            groups.append(usable)
+    return groups
 
 
 def _origin_chip(picks) -> tuple[str | None, str | None]:
@@ -147,13 +165,21 @@ def _render_tasks(tasks: list) -> list[Path]:
 
 def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
                       only_kampanje: bool = False,
-                      title: str | None = None) -> DropResult:
+                      title: str | None = None,
+                      slider: bool = True,
+                      slider_per_page: int = SLIDER_PER_PAGE,
+                      slider_max: int = SLIDER_MAX_ITEMS) -> DropResult:
     """Render the social assets for an edition.
 
     only_kampanje=True renders ONLY the offer (TILBUD) reel — used by the
     dashboard's "Lag tilbud annonse" button, which wants a focused offer ad
     (compare_at_price as førpris, product_type as ny pris), not the full montage
     + per-category set.
+
+    slider=True (default) adds an EXTRA slider reel for every category holding
+    more than `slider_per_page` products with photos — the normal 3-hero reel is
+    still rendered for that category, unchanged. `slider_max` caps how many
+    products one slider shows (a longer reel just doesn't get watched).
 
     `title`, when given, overrides the montage (intro) reel's headline — this is
     the operator's campaign line, e.g. "Vi introduserer mange varer fra Balkan".
@@ -189,6 +215,12 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
 
     # 2) Per-category reel (real photos, cluster-coherent). mp4 only — no PNG
     #    stories. Skip categories with no usable photo.
+    #
+    #    The 3-hero reel is UNCHANGED — it stays exactly as it is, for every
+    #    category. A category with more than one page's worth of products ALSO
+    #    gets an EXTRA slider reel: same beat, but it pages through every product
+    #    instead of only the top 3 (the "we got 12 ice creams" case). Two files,
+    #    same category, pick whichever suits the post.
     if not only_kampanje:
         for cat in edition.categories:
             cps = edition.by_category[cat]
@@ -201,6 +233,26 @@ def build_social_drop(edition: Edition, outdir: Path, week_slug: str = "drop",
                               ([_img_source(cp) for cp in reel_picks],),
                               {"heading": cat.upper(),
                                "out": outdir / f"{week_slug}_reel_{slug}.mp4",
+                               "iso": iso, "chip_text": chip_text}))
+
+            groups = _slider_groups(cps)
+            n_usable = sum(len(g) for g in groups)
+            if slider and n_usable > slider_per_page:
+                pages = R.slider_pages(groups, per_page=slider_per_page,
+                                       max_items=slider_max)
+                shown = [cp for pg in pages for cp in pg]
+                chip_text, iso = _origin_chip(shown)
+                label = f"slider reel {cat} · {len(shown)} varer / {len(pages)} sider"
+                if len(shown) < n_usable:
+                    # Say it out loud: a silent cap reads as "everything is in
+                    # the reel" when it isn't. The rest are still in the PDF.
+                    print(f"[social] {cat}: slider viser {len(shown)} av {n_usable} "
+                          f"varer (maks {slider_max}) — resten står i katalogen")
+                    label += f" (kappet, {n_usable - len(shown)} utenfor)"
+                tasks.append((label, R.reel_slider,
+                              ([[_img_source(cp) for cp in pg] for pg in pages],),
+                              {"heading": cat.upper(),
+                               "out": outdir / f"{week_slug}_slider_{slug}.mp4",
                                "iso": iso, "chip_text": chip_text}))
 
     # 3) Kampanje reels — ONE PER OFFER PRODUCT. Each offer has its own førpris

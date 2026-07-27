@@ -23,7 +23,24 @@ from nordic_catalogue.drops import new_drop_dir
 from nordic_catalogue.model_a import Edition, build_edition
 from nordic_catalogue.snapshot import SnapshotStore
 
+from .constants import SLIDER_MAX_ITEMS
 from .generate import build_social_drop
+
+
+def _add_slider_flags(p: argparse.ArgumentParser) -> None:
+    """Slider knobs shared by `generate` and `select`.
+
+    The slider is an EXTRA reel per category (the normal 3-hero reel is always
+    rendered too), so it is on by default and --no-slider only skips the extra.
+    """
+    p.add_argument("--no-slider", dest="slider", action="store_false",
+                   help="skip the extra slider reel that pages through EVERY "
+                        "product in a category (default: render it whenever a "
+                        "category has more than 3 products with photos)")
+    p.add_argument("--slider-max", type=int, default=SLIDER_MAX_ITEMS, metavar="N",
+                   help=f"max products in one slider reel "
+                        f"(default {SLIDER_MAX_ITEMS} ≈ 21 s)")
+    p.set_defaults(slider=True)
 
 
 def _week_slug(today: date | None = None) -> str:
@@ -131,7 +148,9 @@ def cmd_generate(args: argparse.Namespace) -> int:
         rid = store.commit_run((p.sku, p.inventory_quantity) for p in products)
         print(f"snapshot baseline committed (run {rid})")
 
-    result = build_social_drop(edition, drop, week_slug=slug)
+    result = build_social_drop(edition, drop, week_slug=slug,
+                               slider=getattr(args, "slider", True),
+                               slider_max=getattr(args, "slider_max", SLIDER_MAX_ITEMS))
     extra = _render_vm_hero(args, products, drop, slug)
     n_assets = len(result.assets) + (1 if extra else 0)
     print(f"drop written: 1 PDF + {n_assets} mp4 -> {drop}")
@@ -295,7 +314,9 @@ def cmd_select(args: argparse.Namespace) -> int:
     result = build_social_drop(edition, drop,
                                week_slug="tilbud" if tilbud_mode else "utvalg",
                                only_kampanje=tilbud_mode,
-                               title=getattr(args, "title", None))
+                               title=getattr(args, "title", None),
+                               slider=getattr(args, "slider", True),
+                               slider_max=getattr(args, "slider_max", SLIDER_MAX_ITEMS))
     label = "tilbud" if tilbud_mode else "manual"
     print(f"{label} drop written: 1 PDF + {len(result.assets)} mp4 -> {drop}")
     for a in result.assets:
@@ -562,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="also render the football 'VM-drikker' hero reel from the "
                         "comma-separated product name terms, e.g. "
                         "--vm-hero 'coca cola pet 500,coca cola zero pet,sprite pet'")
+    _add_slider_flags(g)
     g.set_defaults(commit=True, func=cmd_generate)
 
     s = sub.add_parser("select", help="manual ad: PDF + reels for chosen products")
@@ -582,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="override the førpris (before price) for this ad only — "
                         "does NOT change Shopify; enables --tilbud without a "
                         "compare_at_price in the store")
+    _add_slider_flags(s)
     s.set_defaults(func=cmd_select)
 
     pr = sub.add_parser("products",
