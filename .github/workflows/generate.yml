@@ -25,7 +25,7 @@ on:
         required: true
         default: generate
         type: choice
-        options: [generate, preview, status, customers]
+        options: [generate, preview, status, customers, products]
       mock:
         description: "Use offline mock data (commits nothing)"
         default: false
@@ -41,6 +41,10 @@ on:
       origin:
         description: 'Origin chip: "none", "auto", or an ISO-2 country code'
         default: "none"
+        type: string
+      args_json:
+        description: 'Extra CLI arguments as a JSON array, e.g. ["--ids","gid://..."]'
+        default: "[]"
         type: string
 
 # Two renders at once would race on the snapshot baseline, so they queue.
@@ -80,6 +84,9 @@ jobs:
           IN_COMMIT: ${{ inputs.commit }}
           IN_SLIDER: ${{ inputs.slider }}
           IN_ORIGIN: ${{ inputs.origin }}
+          # Passed as JSON and handed to execve as argv, never interpolated into
+          # the shell: `select --title` carries free text the operator typed.
+          WORKER_EXTRA_ARGS: ${{ inputs.args_json }}
           SHOPIFY_STORE_DOMAIN: ${{ secrets.SHOPIFY_STORE_DOMAIN }}
           SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
           SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}

@@ -96,11 +96,14 @@ async function gh(path: string, init: RequestInit = {}): Promise<Response> {
 }
 
 export interface RenderInputs {
-  command?: "generate" | "preview" | "status" | "customers";
+  command?: "generate" | "preview" | "status" | "customers" | "products" | "select";
   mock?: boolean;
   commit?: boolean;
   slider?: boolean;
   origin?: string;
+  /** Extra CLI arguments (e.g. select's --ids/--title). Sent as JSON and given
+   *  to the worker as argv, so free text never passes through a shell. */
+  extraArgs?: string[];
 }
 
 /**
@@ -120,6 +123,7 @@ export async function dispatchRender(jobId: string, inputs: RenderInputs): Promi
       commit: String(inputs.commit ?? true),
       slider: String(inputs.slider ?? true),
       origin: inputs.origin ?? "none",
+      args_json: JSON.stringify(inputs.extraArgs ?? []),
     },
   };
 

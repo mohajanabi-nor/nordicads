@@ -12,6 +12,10 @@
 import { runWorker } from "@/lib/worker";
 import type { PickerProduct } from "@/lib/types";
 import { NextRequest } from "next/server";
+import { sbSelect } from "@/lib/supabase";
+import { getAppState } from "@/lib/app-state";
+import { dispatchRender, usesGitHubActions } from "@/lib/github-actions";
+import { createJob, newJobId } from "@/lib/worker-jobs";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -40,9 +44,83 @@ const _g = globalThis as unknown as {
 const _cache = (_g._pickerCache ??= new Map());
 const _inflight = (_g._pickerInflight ??= new Map());
 
+/** How many rows to pull per PostgREST page — the catalogue is thousands. */
+const DB_PAGE = 1000;
+
+interface ProductRow {
+  id: string;
+  title: string;
+  vendor: string;
+  price_label: string;
+  image_url: string | null;
+  inventory_quantity: number;
+  in_stock: boolean;
+  country_code: string | null;
+  country_name_no: string | null;
+  collections: string[] | null;
+  created_at: string | null;
+  updated_at: string | null;
+  inventory_updated_at: string | null;
+  restock_increase: number | null;
+  is_offer: boolean;
+}
+
+/**
+ * Read the catalogue the runner last wrote.
+ *
+ * There is one stored superset rather than a row per picker window: the windows
+ * are derived by filtering in this file, exactly as they were when the worker
+ * fetched a 90-day superset once and everything narrower came from memory.
+ */
+async function loadFromDatabase(): Promise<Loaded> {
+  const rows: ProductRow[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await sbSelect<ProductRow>("shopify_products", {
+      order: "updated_at.desc.nullslast",
+      offset,
+      limit: DB_PAGE,
+    });
+    rows.push(...page);
+    if (page.length < DB_PAGE) break;
+    offset += DB_PAGE;
+  }
+
+  const meta = await getAppState<{ storeDomain?: string | null }>("products.cache");
+  return {
+    storeDomain: meta?.storeDomain ?? process.env.SHOPIFY_STORE_DOMAIN ?? "",
+    products: rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      vendor: r.vendor,
+      price_label: r.price_label,
+      image_url: r.image_url,
+      inventory_quantity: r.inventory_quantity,
+      in_stock: r.in_stock,
+      country_code: r.country_code,
+      country_name_no: r.country_name_no,
+      collections: r.collections ?? [],
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      inventory_updated_at: r.inventory_updated_at,
+      restock_increase: r.restock_increase,
+      is_offer: r.is_offer,
+    })),
+  };
+}
+
 async function loadWindow(sinceDays: number): Promise<Loaded> {
   const hit = _cache.get(sinceDays);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
+
+  // Hosted, the catalogue comes from the cache table the runner fills: there is
+  // no Python here to fetch it with, and a 30s Shopify walk would not fit in a
+  // request anyway. The in-process cache above still helps within one instance.
+  if (usesGitHubActions()) {
+    const data = await loadFromDatabase();
+    _cache.set(sinceDays, { data, at: Date.now() });
+    return data;
+  }
 
   let p = _inflight.get(sinceDays);
   if (!p) {
@@ -208,6 +286,24 @@ export async function GET(req: NextRequest) {
     // the worker fetch every product; it's cached separately under key 0.
     const windowKey = offersOnly ? 0 : SUPERSET_DAYS;
     if (forceRefresh) _cache.delete(windowKey);
+
+    // Hosted, a refresh cannot happen inside this request — it dispatches a
+    // fetch and says so, rather than appearing to refresh and changing nothing.
+    if (forceRefresh && usesGitHubActions()) {
+      const jobId = newJobId();
+      await createJob(jobId, "products", { trigger: "picker-refresh" });
+      await dispatchRender(jobId, { command: "products" });
+      const { products, storeDomain } = await loadFromDatabase();
+      return Response.json({
+        store_domain: storeDomain,
+        count: products.length,
+        cached: true,
+        refreshing: true,
+        jobId,
+        note: "Henter produkter på nytt i bakgrunnen — last siden om et minutt.",
+        products: [],
+      });
+    }
     const { products, storeDomain } = await loadWindow(windowKey);
     let out = products;
 

@@ -52,6 +52,8 @@ DROP_LINE = re.compile(r"->\s*(.+?)\s*$")
 
 # The `customers` command prints its result as one sentinel-prefixed JSON line.
 CUSTOMERS_SENTINEL = "CUSTOMERS_JSON "
+# The `products` command prints its result the same way.
+PRODUCTS_SENTINEL = "PRODUCTS_JSON "
 
 
 def _headers(extra: dict | None = None) -> dict:
@@ -182,6 +184,33 @@ def upload_drop(job_id: str, drop_dir: str) -> None:
     print(f"[ci] uploaded {(1 if pdf else 0) + len(reels)} asset(s) from {drop_dir}")
 
 
+def post_to_dashboard(path: str, payload_json: str, label: str) -> None:
+    """Hand a fetched payload to the dashboard.
+
+    Fetching lives here because the Shopify client does. What to do with the
+    result lives in the dashboard, so there is one place that decides.
+    """
+    base = os.environ.get("DASHBOARD_URL", "").rstrip("/")
+    token = os.environ.get("WORKER_SERVICE_TOKEN", "")
+    if not base or not token:
+        print(f"[ci] DASHBOARD_URL/WORKER_SERVICE_TOKEN not set — skipping {label} callback",
+              file=sys.stderr)
+        return
+    try:
+        resp = requests.post(
+            f"{base}{path}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            data=payload_json.encode("utf-8"),
+            timeout=300,
+        )
+        if resp.status_code >= 400:
+            print(f"[ci] {label} callback -> {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        else:
+            print(f"[ci] {label} callback ok: {resp.text[:200]}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ci] {label} callback failed: {exc}", file=sys.stderr)
+
+
 def post_customers(payload_json: str) -> None:
     """Hand the fetched customer list to the dashboard to merge.
 
@@ -190,25 +219,36 @@ def post_customers(payload_json: str) -> None:
     merging deliberately does not: consent may only ever be tightened, never
     loosened, and that rule has one home.
     """
-    base = os.environ.get("DASHBOARD_URL", "").rstrip("/")
-    token = os.environ.get("WORKER_SERVICE_TOKEN", "")
-    if not base or not token:
-        print("[ci] DASHBOARD_URL/WORKER_SERVICE_TOKEN not set — skipping sync callback",
-              file=sys.stderr)
-        return
+    post_to_dashboard("/api/internal/sync-customers", payload_json, "sync")
+
+
+def extra_args() -> list[str]:
+    """Arguments the dashboard passed as JSON.
+
+    They arrive as JSON and go straight into argv, so the shell never sees them
+    — `select --title` carries whatever the operator typed. Each one is still
+    length-checked and stripped of control characters, because argv is not a
+    reason to stop validating.
+    """
+    raw = os.environ.get("WORKER_EXTRA_ARGS", "").strip()
+    if not raw or raw == "[]":
+        return []
     try:
-        resp = requests.post(
-            f"{base}/api/internal/sync-customers",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            data=payload_json.encode("utf-8"),
-            timeout=300,
-        )
-        if resp.status_code >= 400:
-            print(f"[ci] sync callback -> {resp.status_code} {resp.text[:300]}", file=sys.stderr)
-        else:
-            print(f"[ci] sync callback ok: {resp.text[:200]}")
+        parsed = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
-        print(f"[ci] sync callback failed: {exc}", file=sys.stderr)
+        print(f"[ci] WORKER_EXTRA_ARGS is not valid JSON: {exc}", file=sys.stderr)
+        return []
+    if not isinstance(parsed, list):
+        print("[ci] WORKER_EXTRA_ARGS must be a JSON array", file=sys.stderr)
+        return []
+    out: list[str] = []
+    for item in parsed[:64]:
+        text = str(item)
+        if len(text) > 2000 or any(ord(ch) < 32 for ch in text):
+            print(f"[ci] refusing suspicious argument: {text[:60]!r}", file=sys.stderr)
+            continue
+        out.append(text)
+    return out
 
 
 def main() -> int:
@@ -222,6 +262,8 @@ def main() -> int:
     if not argv:
         print("[ci] no worker command given", file=sys.stderr)
         return 2
+
+    argv = argv + extra_args()
 
     job_id = ns.job_id
     claim_job(job_id, argv[0], argv)
@@ -250,6 +292,7 @@ def main() -> int:
     last_flush = time.monotonic()
     drop_dir: str | None = None
     customers_payload: str | None = None
+    products_payload: str | None = None
 
     def flush() -> None:
         nonlocal pending, seq, last_flush
@@ -270,6 +313,9 @@ def main() -> int:
         if line.startswith(CUSTOMERS_SENTINEL):
             customers_payload = line[len(CUSTOMERS_SENTINEL):]
 
+        if line.startswith(PRODUCTS_SENTINEL):
+            products_payload = line[len(PRODUCTS_SENTINEL):]
+
         if "drop written:" in line:
             m = DROP_LINE.search(line)
             if m:
@@ -286,6 +332,9 @@ def main() -> int:
 
     if code == 0 and customers_payload:
         post_customers(customers_payload)
+
+    if code == 0 and products_payload:
+        post_to_dashboard("/api/internal/sync-products", products_payload, "products")
 
     set_status(
         job_id,
