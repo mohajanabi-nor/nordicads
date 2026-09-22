@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LoggNavLink from "@/components/LoggNavLink";
+import { currentUser } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -30,27 +31,42 @@ function Logo() {
   );
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  // Signed out, the nav is a row of links that all bounce back to /login, so it
+  // is hidden rather than shown as a set of dead ends.
+  const user = await currentUser().catch(() => null);
+
   return (
     <html lang="no" translate="no">
       <body className="notranslate min-h-screen antialiased">
         <header className="sticky top-0 z-20 border-b border-line bg-cream-2/90 backdrop-blur">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
             <Logo />
-            <nav className="flex items-center gap-1 text-sm font-semibold">
-              <Link href="/" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
-                Dashboard
-              </Link>
-              <Link href="/drops" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
-                Drops
-              </Link>
-              <Link href="/epost" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
-                E-post
-              </Link>
-              <LoggNavLink />
-            </nav>
+            {user ? (
+              <nav className="flex items-center gap-1 text-sm font-semibold">
+                <Link href="/" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                  Dashboard
+                </Link>
+                <Link href="/drops" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                  Drops
+                </Link>
+                <Link href="/epost" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                  E-post
+                </Link>
+                <LoggNavLink />
+                <form action="/api/auth/logout" method="post" className="ml-2 border-l border-line pl-2">
+                  <button
+                    type="submit"
+                    title={user.email ?? undefined}
+                    className="rounded-lg px-3 py-2 text-ink/50 hover:bg-orange/10 hover:text-ink"
+                  >
+                    Logg ut
+                  </button>
+                </form>
+              </nav>
+            ) : null}
           </div>
         </header>
         <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>

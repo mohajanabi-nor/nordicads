@@ -20,7 +20,7 @@
  * Server-only.
  */
 import type { Contact, ContactFilter, ContactStats, ImportResult } from "./types";
-import { eq, inList, is, sbDelete, sbInsert, sbRpc, sbSelect, sbUpdate } from "./supabase";
+import { inList, is, sbDelete, sbInsert, sbRpc, sbSelect, sbUpdate } from "./supabase";
 
 /** Row shape in Postgres. snake_case there, camelCase in the app. */
 interface ContactRow {

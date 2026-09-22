@@ -22,7 +22,17 @@ const RETENTION_MONTHS = 12;
 const LAST_SEEN_KEY = "logg.last_seen";
 
 export type LogLevel = "info" | "warn" | "error";
-export type LogSource = "sync" | "campaign" | "contacts" | "scheduler" | "config";
+/** Kept in step with the CHECK constraint on event_log.source (db/001). */
+export type LogSource =
+  | "sync"
+  | "campaign"
+  | "contacts"
+  | "scheduler"
+  | "config"
+  | "inbound"
+  | "priser"
+  | "worker"
+  | "auth";
 
 export interface LogEntry {
   at: string;
