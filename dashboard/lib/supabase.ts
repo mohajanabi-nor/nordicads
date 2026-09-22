@@ -148,10 +148,44 @@ async function jsonBody<T>(res: Response): Promise<T> {
   return JSON.parse(raw) as T;
 }
 
-/** Rows matching `params`. Pass PostgREST options as params: `select`, `order`, `limit`. */
+/**
+ * The server's hard ceiling on rows per response.
+ *
+ * Supabase caps a result at 1000 however large a `limit` you ask for, and says
+ * nothing about it — you simply get 1000 rows and no indication more exist.
+ * That is a silent wrong answer rather than an error: a truncated contact list
+ * loses customers, a truncated set of already-sent addresses re-mails people.
+ */
+const PAGE_SIZE = 1000;
+
+/**
+ * Rows matching `params`. Pass PostgREST options as params: `select`, `order`.
+ *
+ * Pages automatically past the server's ceiling, so `limit` means what it says.
+ * Supply an `order` when asking for more than one page — without a stable sort
+ * the server may return a row twice across pages and miss another.
+ */
 export async function sbSelect<T>(table: string, params?: QueryParams): Promise<T[]> {
-  const res = await request(buildUrl(table, { select: "*", ...params }), { method: "GET" });
-  return jsonBody<T[]>(res);
+  const { limit, offset, ...rest } = params ?? {};
+  const wanted = typeof limit === "number" ? limit : Number.POSITIVE_INFINITY;
+  const start = typeof offset === "number" ? offset : 0;
+
+  const out: T[] = [];
+  for (let cursor = start; out.length < wanted; cursor += PAGE_SIZE) {
+    const take = Math.min(PAGE_SIZE, wanted - out.length);
+    const res = await request(buildUrl(table, { select: "*", ...rest }), {
+      method: "GET",
+      headers: {
+        "Range-Unit": "items",
+        Range: `${cursor}-${cursor + take - 1}`,
+      },
+    });
+    const page = await jsonBody<T[]>(res);
+    out.push(...page);
+    // A short page is the end of the data; anything else and there may be more.
+    if (page.length < take) break;
+  }
+  return out;
 }
 
 /** The first matching row, or null. */
