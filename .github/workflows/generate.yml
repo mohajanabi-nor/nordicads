@@ -1,0 +1,127 @@
+# Renders a drop (catalogue PDF + reels) on a runner.
+#
+# This is the worker's new home. It used to be a child process on whoever's
+# laptop was running the dashboard; hosted, there is nowhere on Vercel to spawn
+# Python, and no free always-on host has the memory to encode 1080x1920 video.
+# A render is heavy, occasional and batch-shaped, which is what a CI runner is.
+#
+# Dispatched by the dashboard through the REST API. `workflow_dispatch` returns
+# no run id, so `run-name` carries the dashboard's own job_id and that is how
+# the run is found again.
+
+name: generate
+
+run-name: "${{ inputs.command }} · ${{ inputs.job_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Dashboard job id (used to correlate the run and stream logs)"
+        required: true
+        type: string
+      command:
+        description: "Worker command"
+        required: true
+        default: generate
+        type: choice
+        options: [generate, preview, status]
+      mock:
+        description: "Use offline mock data (commits nothing)"
+        default: false
+        type: boolean
+      commit:
+        description: "Commit the snapshot baseline (real runs only)"
+        default: true
+        type: boolean
+      slider:
+        description: "Render the extra per-category slider reel"
+        default: true
+        type: boolean
+      origin:
+        description: 'Origin chip: "none", "auto", or an ISO-2 country code'
+        default: "none"
+        type: string
+
+# Two renders at once would race on the snapshot baseline, so they queue.
+concurrency:
+  group: worker-render
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    # A render is minutes, not hours. The cap stops a hung job quietly eating
+    # the monthly Actions allowance.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: worker/requirements.txt
+
+      - name: Install dependencies
+        working-directory: worker
+        run: pip install -r requirements.txt
+
+      - name: Render
+        working-directory: worker
+        env:
+          # Inputs go through the environment rather than being interpolated
+          # into the script body: `${{ }}` inside a run block is substituted as
+          # raw text, so a crafted input would otherwise execute as shell.
+          IN_JOB_ID: ${{ inputs.job_id }}
+          IN_COMMAND: ${{ inputs.command }}
+          IN_MOCK: ${{ inputs.mock }}
+          IN_COMMIT: ${{ inputs.commit }}
+          IN_SLIDER: ${{ inputs.slider }}
+          IN_ORIGIN: ${{ inputs.origin }}
+          SHOPIFY_STORE_DOMAIN: ${{ secrets.SHOPIFY_STORE_DOMAIN }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          args="$IN_COMMAND"
+
+          if [ "$IN_MOCK" = "true" ]; then
+            args="$args --mock"
+          elif [ "$IN_COMMIT" != "true" ]; then
+            args="$args --no-commit"
+          fi
+
+          if [ "$IN_SLIDER" != "true" ]; then
+            args="$args --no-slider"
+          fi
+
+          # Only a shape the worker understands ever reaches the CLI.
+          if [ "$IN_ORIGIN" != "none" ] && printf '%s' "$IN_ORIGIN" | grep -Eq '^(auto|[A-Za-z]{2})$'; then
+            args="$args --origin $IN_ORIGIN"
+          fi
+
+          echo "running: $args"
+          python ci_run.py --job-id "$IN_JOB_ID" -- $args
+
+      - name: Report a failure that happened before the worker started
+        if: failure()
+        env:
+          IN_JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # Without this a setup failure (bad dependency, missing secret) would
+        # leave the dashboard showing "queued" forever, with no way to tell a
+        # slow render from a dead one.
+        run: |
+          curl -sS -X PATCH \
+            "$SUPABASE_URL/rest/v1/worker_jobs?id=eq.$IN_JOB_ID&status=in.(queued,running)" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status":"failed","ended_at":"now()","error_message":"kjoringen feilet for worker startet - se GitHub Actions-loggen"}'
