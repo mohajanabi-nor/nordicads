@@ -12,3 +12,7 @@ python-dotenv>=1.0
 # so no system ffmpeg is required.
 imageio>=2.34
 imageio-ffmpeg>=0.5
+# HTTP front door (service.py), so the dashboard can run the worker remotely
+# instead of spawning it as a local child process.
+fastapi>=0.115
+uvicorn[standard]>=0.32
