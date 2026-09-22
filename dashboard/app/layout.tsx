@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LoggNavLink from "@/components/LoggNavLink";
+import PriserNavLink from "@/components/PriserNavLink";
 import { currentUser } from "@/lib/auth";
 import "./globals.css";
 
@@ -55,6 +56,7 @@ export default async function RootLayout({
                 <Link href="/epost" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
                   E-post
                 </Link>
+                <PriserNavLink />
                 <LoggNavLink />
                 <form action="/api/auth/logout" method="post" className="ml-2 border-l border-line pl-2">
                   <button
