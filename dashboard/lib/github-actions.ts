@@ -96,7 +96,7 @@ async function gh(path: string, init: RequestInit = {}): Promise<Response> {
 }
 
 export interface RenderInputs {
-  command?: "generate" | "preview" | "status";
+  command?: "generate" | "preview" | "status" | "customers";
   mock?: boolean;
   commit?: boolean;
   slider?: boolean;

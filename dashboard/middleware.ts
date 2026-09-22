@@ -25,6 +25,7 @@ const OPEN_ROUTES = [
   "/api/auth/login", // the way in — it IS the authentication
   "/api/inbound/", // Resend inbound email — verified by Svix signature
   "/api/cron/", // Vercel Cron — verified by CRON_SECRET
+  "/api/internal/", // the Actions runner reporting back — verified by WORKER_SERVICE_TOKEN
 ];
 
 function isOpenRoute(pathname: string): boolean {

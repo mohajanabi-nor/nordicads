@@ -50,6 +50,9 @@ SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 # take everything after the arrow rather than a non-space run.
 DROP_LINE = re.compile(r"->\s*(.+?)\s*$")
 
+# The `customers` command prints its result as one sentinel-prefixed JSON line.
+CUSTOMERS_SENTINEL = "CUSTOMERS_JSON "
+
 
 def _headers(extra: dict | None = None) -> dict:
     return {
@@ -179,6 +182,35 @@ def upload_drop(job_id: str, drop_dir: str) -> None:
     print(f"[ci] uploaded {(1 if pdf else 0) + len(reels)} asset(s) from {drop_dir}")
 
 
+def post_customers(payload_json: str) -> None:
+    """Hand the fetched customer list to the dashboard to merge.
+
+    The fetching lives here because the Shopify client does — paginated GraphQL
+    with a version-dependent field spelling, not worth rewriting twice. The
+    merging deliberately does not: consent may only ever be tightened, never
+    loosened, and that rule has one home.
+    """
+    base = os.environ.get("DASHBOARD_URL", "").rstrip("/")
+    token = os.environ.get("WORKER_SERVICE_TOKEN", "")
+    if not base or not token:
+        print("[ci] DASHBOARD_URL/WORKER_SERVICE_TOKEN not set — skipping sync callback",
+              file=sys.stderr)
+        return
+    try:
+        resp = requests.post(
+            f"{base}/api/internal/sync-customers",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            data=payload_json.encode("utf-8"),
+            timeout=300,
+        )
+        if resp.status_code >= 400:
+            print(f"[ci] sync callback -> {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        else:
+            print(f"[ci] sync callback ok: {resp.text[:200]}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ci] sync callback failed: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
@@ -217,6 +249,7 @@ def main() -> int:
     pending: list[str] = []
     last_flush = time.monotonic()
     drop_dir: str | None = None
+    customers_payload: str | None = None
 
     def flush() -> None:
         nonlocal pending, seq, last_flush
@@ -234,6 +267,9 @@ def main() -> int:
         print(line, flush=True)
         pending.append(line)
 
+        if line.startswith(CUSTOMERS_SENTINEL):
+            customers_payload = line[len(CUSTOMERS_SENTINEL):]
+
         if "drop written:" in line:
             m = DROP_LINE.search(line)
             if m:
@@ -247,6 +283,9 @@ def main() -> int:
 
     if drop_dir:
         upload_drop(job_id, drop_dir)
+
+    if code == 0 and customers_payload:
+        post_customers(customers_payload)
 
     set_status(
         job_id,

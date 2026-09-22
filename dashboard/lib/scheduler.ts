@@ -81,6 +81,19 @@ export function isEnabled(): boolean {
   return process.env.AUTO_SYNC_ENABLED !== "0"; // on unless explicitly disabled
 }
 
+/**
+ * Whether the in-process timer should run at all.
+ *
+ * On a serverless host it must not. There is no process between requests for a
+ * setInterval to live in, the one that briefly exists belongs to a single
+ * instance that may vanish mid-timer, and it fires on start — which is how a
+ * full Shopify sync can kick off merely because someone loaded a page. Vercel
+ * Cron drives the schedule there instead (see app/api/cron/sync).
+ */
+function timerShouldRun(): boolean {
+  return !process.env.VERCEL && !process.env.GITHUB_TOKEN;
+}
+
 function intervalMs(): number {
   const hours = Number(process.env.AUTO_SYNC_INTERVAL_HOURS || "24");
   return Math.max(1, hours) * 60 * 60 * 1000;
@@ -217,6 +230,7 @@ async function tick(): Promise<void> {
  */
 export function ensureScheduler(): void {
   if (runtime.timer || !isEnabled()) return;
+  if (!timerShouldRun()) return;
   runtime.timer = setInterval(tick, TICK_MS);
   // Node keeps the process alive for pending timers; this one should not.
   runtime.timer.unref?.();
