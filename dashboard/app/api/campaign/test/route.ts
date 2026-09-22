@@ -6,13 +6,11 @@
  * exercises the whole path — domain verification, API key, template, and the
  * attachment — against one recipient instead of five hundred.
  */
-import fs from "node:fs";
-
 import { campaignHeaders, idempotencyKey, unsubscribeMailto } from "@/lib/campaign-shared";
 import { renderCampaign } from "@/lib/email-template";
 import { configProblems, isDryRun, sendOne } from "@/lib/resend";
 import { isValidEmail, normalizeEmail } from "@/lib/contacts";
-import { resolveDropFile } from "@/lib/worker";
+import { readDropFile } from "@/lib/drops";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -48,14 +46,13 @@ export async function POST(req: Request) {
     // guard the drops route already uses.
     let attachment: { filename: string; content: string } | null = null;
     if (body.attach && body.dropDir) {
-      const pdf = resolveDropFile(body.dropDir, "katalog.pdf");
-      if (!pdf) {
+      const buf = await readDropFile(body.dropDir, "katalog.pdf");
+      if (!buf) {
         return Response.json(
           { error: `fant ingen katalog.pdf i ${body.dropDir}` },
           { status: 400 },
         );
       }
-      const buf = fs.readFileSync(pdf);
       const content = buf.toString("base64");
       if (content.length > MAX_ATTACHMENT_BYTES) {
         return Response.json({ error: "vedlegget er for stort" }, { status: 413 });

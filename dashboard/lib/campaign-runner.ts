@@ -15,6 +15,7 @@
  * Server-only.
  */
 import { mailableEmails, markSent, recordPermanentFailure } from "./contacts";
+import { isAllowedRecipient } from "./resend";
 import { logError, logInfo, logWarn } from "./eventlog";
 import { campaignHeaders, idempotencyKey } from "./campaign-shared";
 import {
@@ -179,6 +180,23 @@ async function runLoop(
     if (runner.cancelled) {
       emit(runner, "log", { line: "Avbrutt av operatør." });
       break;
+    }
+
+    // While an allowlist is set, anyone not on it is skipped and SAID to be
+    // skipped — never recorded as sent, which would be a lie in the one log
+    // that answers "did Kari get it?".
+    if (!isAllowedRecipient(email)) {
+      skipped++;
+      await appendRecipient(manifest.id, {
+        email,
+        status: "skipped",
+        at: new Date().toISOString(),
+        error: "ikke i EMAIL_ALLOWLIST (testmodus)",
+        attempt: 0,
+      });
+      emit(runner, "log", { line: `Hoppet over ${maskEmail(email)} — ikke i testlisten.` });
+      progress(email);
+      continue;
     }
 
     // Honour an unsubscribe that arrived after the campaign started.

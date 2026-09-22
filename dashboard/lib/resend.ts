@@ -49,6 +49,32 @@ export function isDryRun(): boolean {
   return process.env.EMAIL_DRY_RUN === "1";
 }
 
+/**
+ * Addresses mail may be sent to while testing, if the list is non-empty.
+ *
+ * Dry-run is a single environment variable, and the moment a real API key
+ * exists one wrong value reaches the whole customer list. This is the second
+ * lock: with it set, a real send can still only reach addresses you named, so
+ * "turn dry-run off and try it" stops being a decision with 560 consequences.
+ *
+ * Empty (the default) means no restriction — normal production behaviour.
+ */
+export function allowedRecipients(): Set<string> {
+  const raw = process.env.EMAIL_ALLOWLIST || "";
+  return new Set(
+    raw
+      .split(/[,\s]+/)
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+export function isAllowedRecipient(email: string): boolean {
+  const allow = allowedRecipients();
+  if (allow.size === 0) return true;
+  return allow.has(email.trim().toLowerCase());
+}
+
 export function emailConfig() {
   return {
     apiKey: process.env.RESEND_API_KEY || "",
@@ -116,6 +142,19 @@ export async function sendOne(input: SendInput): Promise<SendResult> {
     // Everything except the HTTP call still runs: throttling, logging, resume.
     await sleep(120);
     return { ok: true, id: `dry_${input.idempotencyKey.slice(0, 24)}`, dryRun: true };
+  }
+
+  // The allowlist is normally enforced before we get here, where a blocked
+  // address can be recorded honestly as skipped. Reaching this point means
+  // something bypassed that, so stop the whole run rather than deliver: "fatal"
+  // ends the campaign without touching anyone's consent.
+  if (!isAllowedRecipient(input.to)) {
+    return {
+      ok: false,
+      kind: "fatal",
+      status: 0,
+      message: `${maskEmail(input.to)} er ikke i EMAIL_ALLOWLIST — sending stoppet (testmodus)`,
+    };
   }
 
   const body: Record<string, unknown> = {
