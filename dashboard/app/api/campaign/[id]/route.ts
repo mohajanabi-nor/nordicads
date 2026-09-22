@@ -6,15 +6,13 @@
  * the frozen manifest so the message is identical to what earlier recipients
  * received.
  */
-import { cancelCampaign, resumeCampaign } from "@/lib/campaign-runner";
+import { cancelCampaign, clearCancel, runCampaignBatch } from "@/lib/campaign-runner";
 import {
   isValidCampaignId,
   readCampaign,
   readRecipients,
   summarize,
 } from "@/lib/campaign-store";
-import type { Attachment } from "@/lib/resend";
-import { readDropFile } from "@/lib/drops";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -41,8 +39,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const { action } = (await req.json()) as { action?: string };
 
     if (action === "cancel") {
-      const stopped = cancelCampaign(params.id);
-      return Response.json({ cancelled: stopped });
+      // Takes effect within one send: every driver checks this per recipient.
+      await cancelCampaign(params.id);
+      return Response.json({ cancelled: true });
     }
 
     if (action === "resume") {
@@ -50,24 +49,15 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       if (!manifest) {
         return Response.json({ error: "fant ikke kampanjen" }, { status: 404 });
       }
-      // Rebuild the attachment from the same drop the campaign was created with,
-      // so resumed recipients get exactly what the first ones got.
-      let attachment: Attachment | null = null;
-      if (manifest.attachmentName && manifest.dropDir) {
-        const pdf = await readDropFile(manifest.dropDir, "katalog.pdf");
-        if (!pdf) {
-          return Response.json(
-            { error: `katalog.pdf mangler i ${manifest.dropDir} — kan ikke fortsette med vedlegg` },
-            { status: 400 },
-          );
-        }
-        attachment = {
-          filename: manifest.attachmentName,
-          content: pdf.toString("base64"),
-        };
-      }
-      const started = await resumeCampaign(params.id, attachment);
-      if (!started) {
+      // An explicit resume overrides an earlier cancel, then sends what fits in
+      // this request. Anything left over is picked up by the cron sweep, so the
+      // button makes immediate progress without blocking until the very end.
+      await clearCancel(params.id);
+      const result = await runCampaignBatch(params.id, {
+        budgetMs: 45_000,
+        signal: req.signal,
+      });
+      if (!result.ran) {
         return Response.json({ error: "kampanjen kjører allerede" }, { status: 409 });
       }
       return Response.json({ resumed: true, ...(await summarize(manifest)) });

@@ -1,22 +1,31 @@
 /**
- * Watch a running campaign over SSE.
+ * Watch a campaign — and, while watching, drive it.
  *
- * This is an OBSERVER, and the distinction is the whole point: unlike
- * api/generate and api/select — which kill their child process when the client
- * disconnects — aborting this request only detaches the viewer. The send keeps
- * going. Closing the tab mid-campaign must never leave half a customer list
- * mailed and the other half not.
+ * This used to be a pure observer of a detached background loop. There is no
+ * such loop any more: a serverless instance is frozen once its response is
+ * sent, so work only happens inside a request that is waiting for it. Opening
+ * the progress view is therefore what starts the send, which is also why a
+ * campaign begins the moment the composer creates it.
+ *
+ * Closing the tab no longer abandons the campaign: the batch stops, the lease
+ * is released, and the cron sweep picks it up within a minute. So the guarantee
+ * the old design wanted — "a send is not tied to a browser tab" — still holds,
+ * it is just kept somewhere that survives.
  *
  * Frames use the same `event:`/`data:` contract as the other SSE routes, so the
  * client parser is unchanged.
  */
-import { subscribe } from "@/lib/campaign-runner";
-import { isValidCampaignId, readCampaign, summarize } from "@/lib/campaign-store";
+import { isValidCampaignId, readCampaign } from "@/lib/campaign-store";
+import { campaignProgress, runCampaignBatch } from "@/lib/campaign-runner";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 800; // Vercel caps this; the job outlives the connection anyway
+export const maxDuration = 800;
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+/** Leave headroom under maxDuration so the batch stops itself and reports,
+ *  rather than being cut off mid-frame by the platform. */
+const BUDGET_MS = 700_000;
+
+export async function GET(req: Request, { params }: { params: { id: string } }) {
   const id = params.id;
   if (!isValidCampaignId(id)) {
     return Response.json({ error: "ugyldig kampanje-id" }, { status: 400 });
@@ -45,39 +54,44 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
         }
       };
 
-      const unsubscribe = subscribe(id, (frame) => {
-        send(frame.event, frame.data);
-        if (frame.event === "done") finish();
-      });
-
-      if (!unsubscribe) {
-        // No live runner: the campaign finished earlier (or this process was
-        // restarted). Serve the stored outcome so the page still shows results.
+      try {
         const manifest = await readCampaign(id);
         if (!manifest) {
           send("error", { message: "fant ikke kampanjen" });
-        } else {
-          const s = await summarize(manifest);
-          send("progress", { sent: s.sent, failed: s.failed, skipped: s.skipped, total: s.total });
-          send("done", {
-            campaignId: s.id,
-            sent: s.sent,
-            failed: s.failed,
-            skipped: s.skipped,
-            total: s.total,
-            dryRun: s.dryRun,
-            restored: true,
-          });
+          finish();
+          return;
         }
-        finish();
-        return;
-      }
 
-      // Detaching a viewer must NOT stop the campaign — only unsubscribe.
-      _req.signal.addEventListener("abort", () => {
-        unsubscribe();
+        const result = await runCampaignBatch(id, {
+          budgetMs: BUDGET_MS,
+          signal: req.signal,
+          emit: (event, data) => send(event, data),
+        });
+
+        // Another driver holds the lease, or the campaign was already finished:
+        // report the stored outcome so a reloaded page is never blank.
+        if (!result.ran) {
+          const p = await campaignProgress(manifest);
+          send("progress", { sent: p.sent, failed: p.failed, skipped: p.skipped, total: p.total });
+          if (p.done) {
+            send("done", {
+              campaignId: manifest.id,
+              sent: p.sent,
+              failed: p.failed,
+              skipped: p.skipped,
+              total: p.total,
+              dryRun: manifest.dryRun,
+              restored: true,
+            });
+          } else {
+            send("log", { line: "Utsendingen kjører allerede — følger med." });
+          }
+        }
+      } catch (err) {
+        send("error", { message: String(err instanceof Error ? err.message : err) });
+      } finally {
         finish();
-      });
+      }
     },
   });
 

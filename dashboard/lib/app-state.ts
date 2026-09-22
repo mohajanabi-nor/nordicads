@@ -8,7 +8,7 @@
  *
  * Server-only.
  */
-import { eq, sbInsert, sbSelectOne } from "./supabase";
+import { eq, sbDelete, sbInsert, sbSelectOne } from "./supabase";
 
 interface StateRow<T> {
   key: string;
@@ -26,4 +26,10 @@ export async function setAppState<T>(key: string, value: T): Promise<void> {
     { key, value, updated_at: new Date().toISOString() },
     { onConflict: "key", merge: true },
   );
+}
+
+/** Remove a key entirely. Distinct from storing null, which the column forbids
+ *  — and "no row" is the honest way to say a flag is not set. */
+export async function clearAppState(key: string): Promise<void> {
+  await sbDelete("app_state", { key: eq(key) });
 }

@@ -1,13 +1,12 @@
 /**
- * Start a campaign.
+ * Create a campaign.
  *
- * Validates, freezes the rendered message into a manifest, kicks off the runner
- * and returns `{ campaignId }` immediately. Progress is watched separately via
- * /api/campaign/[id]/stream — so the send is not tied to this request, and the
- * operator can close the tab without stopping it.
+ * Validates, freezes the rendered message into a manifest, and returns
+ * `{ campaignId }`. The sending itself happens on /api/campaign/[id]/stream,
+ * which the client opens next, with a cron sweep finishing anything left — so
+ * closing the tab delays a campaign rather than abandoning it.
  */
 import { unsubscribeMailto } from "@/lib/campaign-shared";
-import { startCampaign } from "@/lib/campaign-runner";
 import { createCampaign, newCampaignId, type CampaignManifest } from "@/lib/campaign-store";
 import { isValidEmail, mailableEmails, normalizeEmail } from "@/lib/contacts";
 import { readDropFile } from "@/lib/drops";
@@ -109,10 +108,14 @@ export async function POST(req: Request) {
       dryRun: isDryRun(),
     };
 
-    // Awaited: the manifest is what a resume replays from, so the send must not
-    // start until it is durably recorded.
+    // Awaited: the manifest is what the send replays from, so it must be
+    // durably recorded before anything else can pick the campaign up.
+    //
+    // Nothing is started here. The progress stream the client opens next drives
+    // the send, and a cron sweep finishes whatever it does not — a loop launched
+    // from this request would simply be frozen along with the instance the
+    // moment this response is returned.
     await createCampaign(manifest);
-    startCampaign(manifest, attachment);
 
     return Response.json({
       campaignId: manifest.id,
