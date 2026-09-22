@@ -224,6 +224,18 @@ class SnapshotStore:
         return self._backend.previous_quantities()
 
     def commit_run(self, items: Iterable[tuple[str, int]]) -> int:
-        """Persist a new snapshot. items = iterable of (sku, quantity)."""
-        cleaned = [(sku, int(qty)) for sku, qty in items if sku]
-        return self._backend.commit_run(cleaned)
+        """Persist a new snapshot. items = iterable of (sku, quantity).
+
+        The same SKU can appear on more than one product in Shopify — this
+        catalogue carries a handful — so the pairs are collapsed before they are
+        stored, the last value winning. That is what the store already did with
+        its running inventory; only the per-run copy kept both rows, and nothing
+        reads it. Postgres will not accept the duplicates either way: the key on
+        (run_id, sku) rejects them, and an upsert cannot touch the same row
+        twice in one statement.
+        """
+        deduped: dict[str, int] = {}
+        for sku, qty in items:
+            if sku:
+                deduped[sku] = int(qty)
+        return self._backend.commit_run(list(deduped.items()))
