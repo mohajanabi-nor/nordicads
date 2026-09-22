@@ -24,7 +24,7 @@
 import { spawnWorker, OUTPUT_DIR } from "@/lib/worker";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 3600; // a render can take minutes
+export const maxDuration = 800; // Vercel caps this; the job outlives the connection anyway
 
 // Pipeline steps for the manual flow (no baseline commit).
 const STEPS: { key: string; label: string; match: (l: string) => boolean }[] = [

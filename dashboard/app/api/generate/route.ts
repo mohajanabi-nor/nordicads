@@ -27,7 +27,7 @@ import { dispatchRender, findRun, usesGitHubActions, type RenderInputs } from "@
 import { createJob, failJob, getJob, isTerminal, newJobId, readLogs, attachRun } from "@/lib/worker-jobs";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 3600; // a full render can take minutes
+export const maxDuration = 800; // Vercel caps this; the job outlives the connection anyway
 
 // Ordered pipeline steps shown as a checklist in the UI. `match` detects the
 // step's START from a worker stdout line; reaching a later step marks earlier

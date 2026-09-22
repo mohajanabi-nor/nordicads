@@ -14,7 +14,7 @@ import { subscribe } from "@/lib/campaign-runner";
 import { isValidCampaignId, readCampaign, summarize } from "@/lib/campaign-store";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 3600;
+export const maxDuration = 800; // Vercel caps this; the job outlives the connection anyway
 
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const id = params.id;
