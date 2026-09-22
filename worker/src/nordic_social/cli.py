@@ -583,6 +583,119 @@ def cmd_products(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_customers(args: argparse.Namespace) -> int:
+    """Fetch customers for the e-post list — and, with --probe, settle whether
+    this Shopify app can actually read customer email at all.
+
+    That question has a precise answer and a misleading failure mode: on the
+    Basic plan an ADMIN-CREATED custom app has its Level 2 protected customer
+    data (email, name, phone, address) redacted, so the API returns success with
+    `email: null` on every customer rather than an error. Read naively that looks
+    like a store full of customers without addresses. The probe distinguishes
+    "no permission" from "genuinely empty" by looking at how many rows came back
+    versus how many carry an email.
+    """
+    import json
+
+    from nordic_catalogue.shopify_client import ShopifyClient, ShopifyError
+
+    try:
+        client = ShopifyClient()
+        limit = getattr(args, "limit", None) or (25 if args.probe else None)
+        print(f"[shopify] fetching customers from {CONFIG.store_domain} "
+              f"(api {CONFIG.api_version}) ...")
+        # Default to the WHOLE list, not just consenting customers: the
+        # dashboard wants people who have opted out too, so it can show them
+        # unticked rather than silently omitting them — an address that is
+        # missing looks identical to one that was never imported.
+        customers = client.fetch_customers(
+            query="accepts_marketing:true" if getattr(args, "subscribed_only", False) else None,
+            limit=limit,
+        )
+    except ShopifyError as e:
+        msg = str(e)
+        print(f"FEIL: {msg}")
+        # ACCESS_DENIED is ambiguous on its own — the scope may be listed in the
+        # app config yet absent from the token. Ask Shopify what the token really
+        # carries, so the operator is told which of the two it is.
+        if "ACCESS_DENIED" in msg or "access denied" in msg.lower():
+            try:
+                scopes = client.access_scopes()
+            except Exception:  # noqa: BLE001 — diagnostics must never mask the real error
+                scopes = []
+            if scopes:
+                print()
+                print("  Scopes dette tokenet faktisk har:")
+                for s in scopes:
+                    print(f"      {s}")
+                print()
+                if "read_customers" in scopes:
+                    print("  read_customers ER med — da er dette IKKE et scope-problem.")
+                    print("  Sannsynligvis mangler «protected customer data» for appen.")
+                else:
+                    print("  read_customers MANGLER i tokenet.")
+                    print("  Scopet er ikke aktivt ennå. I Dev Dashboard må endringer")
+                    print("  RELEASES som en ny app-versjon — det holder ikke å lagre")
+                    print("  konfigurasjonen. Slipp en ny versjon, oppdater appen på")
+                    print("  butikken, og kjør denne kommandoen på nytt.")
+        return 1
+
+    total = len(customers)
+    with_email = sum(1 for c in customers if c.email)
+    subscribed = sum(1 for c in customers if c.is_mailable)
+
+    if args.probe:
+        print()
+        print("=" * 62)
+        print(f"  kunder hentet      : {total}")
+        print(f"  med e-postadresse  : {with_email}")
+        print(f"  abonnenter (SUBSCRIBED): {subscribed}")
+        print("=" * 62)
+        if total == 0:
+            print("UAVKLART: butikken returnerte ingen kunder i det hele tatt.")
+            print("  Prøv --all (uten samtykkefilter). Har butikken kunder?")
+            return 0
+        if with_email == 0:
+            print("BLOKKERT: kunder kommer tilbake, men HVER e-post er tom.")
+            print("  Det er Shopify som sladder Level 2-data — appen er en")
+            print("  admin-opprettet custom app på Basic-planen.")
+            print("  -> Lag appen på nytt i Partner Dashboard (custom distribution)")
+            print("     og be om «protected customer data» + feltet Email.")
+            return 2
+        print("OK: e-postadresser er lesbare. Ingen Partner-app nødvendig.")
+        for c in customers[:5]:
+            print(f"    {c.email}  ({c.marketing_state})  {c.company}")
+        return 0
+
+    # EVERY customer, including those with no address at all. The dashboard
+    # cannot store an emailless customer as a contact (contacts are keyed by
+    # email), but it logs each one by name and id — a customer that is simply
+    # absent from the payload is indistinguishable from one that was never
+    # fetched, and "nothing was skipped silently" has to be checkable.
+    items = [{
+        "id": c.id,
+        "email": c.email,
+        "name": c.display_name,
+        "company": c.company,
+        "city": c.city,
+        "marketing_state": c.marketing_state,
+        "orders_count": c.orders_count,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    } for c in customers]
+
+    payload = {
+        "store_domain": CONFIG.store_domain,
+        "fetched": total,
+        "with_email": with_email,
+        "subscribed": subscribed,
+        "count": len(items),
+        "customers": items,
+    }
+    print("CUSTOMERS_JSON " + json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def _report(edition: Edition) -> None:
     from collections import Counter
 
@@ -654,6 +767,17 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--limit", type=int, metavar="N", help="cap the number returned")
     pr.add_argument("--query", metavar="TERM", help="filter by title/vendor substring")
     pr.set_defaults(func=cmd_products)
+
+    cu = sub.add_parser("customers",
+                        help="fetch customers for the e-post list (--probe to test access)")
+    cu.add_argument("--probe", action="store_true",
+                    help="report whether customer EMAIL is readable by this app "
+                         "(Basic-plan admin custom apps get it redacted)")
+    cu.add_argument("--subscribed-only", dest="subscribed_only", action="store_true",
+                    help="narrow to accepts_marketing:true server-side (default: "
+                         "fetch everyone, so opted-out customers are visible too)")
+    cu.add_argument("--limit", type=int, metavar="N", help="cap the number fetched")
+    cu.set_defaults(func=cmd_customers)
 
     st = sub.add_parser("status", help="emit baseline + config status as JSON")
     st.add_argument("--json", action="store_true", help="(default) JSON output")

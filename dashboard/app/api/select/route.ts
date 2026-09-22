@@ -22,7 +22,6 @@
  *     ("PL") to print that country on every reel.
  */
 import { spawnWorker, OUTPUT_DIR } from "@/lib/worker";
-import path from "node:path";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 3600; // a render can take minutes
@@ -74,7 +73,18 @@ export async function POST(req: Request) {
           encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
         );
 
-      const child = spawnWorker(args);
+      // Resolving the interpreter can fail (no venv, no Python on PATH). Report
+      // that as a normal SSE error so it lands in the operator's log panel,
+      // instead of throwing out of start() as a bodyless 500.
+      let child: ReturnType<typeof spawnWorker>;
+      try {
+        child = spawnWorker(args);
+      } catch (err) {
+        send("error", { message: String(err instanceof Error ? err.message : err) });
+        controller.close();
+        return;
+      }
+
       let stepIdx = -1;
       let buf = "";
       let dropDir: string | null = null;
@@ -92,8 +102,12 @@ export async function POST(req: Request) {
       const handleLine = (line: string) => {
         if (!line.trim()) return;
         send("log", { line });
-        const m = /->\s*(\S+)\s*$/.exec(line);
-        if (line.includes("drop written:") && m) dropDir = path.basename(m[1]);
+        // Everything after the arrow (paths contain spaces on macOS and Windows
+        // alike), split on both separators — see the same parse in api/generate.
+        const m = /->\s*(.+?)\s*$/.exec(line);
+        if (line.includes("drop written:") && m) {
+          dropDir = m[1].split(/[\\/]/).filter(Boolean).pop() ?? null;
+        }
         const am = /1 PDF \+ (\d+) mp4/.exec(line);
         if (am) assetCount = parseInt(am[1], 10) + 1;
         for (let i = STEPS.length - 1; i > stepIdx; i--) {

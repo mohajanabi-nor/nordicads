@@ -74,6 +74,39 @@ class ClassifiedProduct:
     type_label: Optional[str] = None  # AI varetype label, for intra-category clustering
 
 
+@dataclass
+class Customer:
+    """A Shopify customer, for the e-post recipient list.
+
+    `email` is Level 2 protected customer data. Shopify redacts it (returns
+    None) for an admin-created custom app on the Basic plan, which is exactly
+    what `cli.py customers --probe` exists to detect — a null email here means
+    a permissions problem, not a customer without an address.
+    """
+
+    id: str  # Shopify GID
+    email: Optional[str]  # None = redacted OR genuinely absent; the probe tells them apart
+    first_name: str
+    last_name: str
+    marketing_state: Optional[str]  # SUBSCRIBED | NOT_SUBSCRIBED | PENDING | UNSUBSCRIBED | …
+    company: str = ""  # from defaultAddress
+    city: str = ""
+    orders_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @property
+    def display_name(self) -> str:
+        name = f"{self.first_name} {self.last_name}".strip()
+        return name or (self.email or "—")
+
+    @property
+    def is_mailable(self) -> bool:
+        """Only an explicit SUBSCRIBED is consent. PENDING is a double opt-in
+        that was never confirmed, and must not be mailed."""
+        return bool(self.email) and self.marketing_state == "SUBSCRIBED"
+
+
 def _format_price(value: float) -> str:
     """17 -> 'kr 17,00', 34.9 -> 'kr 34,90'."""
     return "kr " + f"{value:,.2f}".replace(",", " ").replace(".", ",")

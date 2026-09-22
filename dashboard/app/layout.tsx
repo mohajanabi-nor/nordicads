@@ -1,10 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import LoggNavLink from "@/components/LoggNavLink";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Nordic Engros — Drop Tool",
   description: "Kontrollpanel for katalog- og reels-generering",
+  // The UI is Norwegian and the browser may well be set to another language, so
+  // Chrome offers to translate it. Google Translate swaps text nodes underneath
+  // React, which then fails with "removeChild: node is not a child of this node"
+  // the moment anything re-renders. This is an internal tool — translation is
+  // never wanted, so turn it off rather than fight the symptom.
+  other: { google: "notranslate" },
 };
 
 function Logo() {
@@ -27,8 +34,8 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="no">
-      <body className="min-h-screen antialiased">
+    <html lang="no" translate="no">
+      <body className="notranslate min-h-screen antialiased">
         <header className="sticky top-0 z-20 border-b border-line bg-cream-2/90 backdrop-blur">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
             <Logo />
@@ -39,6 +46,10 @@ export default function RootLayout({
               <Link href="/drops" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
                 Drops
               </Link>
+              <Link href="/epost" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                E-post
+              </Link>
+              <LoggNavLink />
             </nav>
           </div>
         </header>

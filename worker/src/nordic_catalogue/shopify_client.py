@@ -15,7 +15,7 @@ from typing import Any, Iterator, Optional
 import requests
 
 from .config import CONFIG, Config
-from .models import Product
+from .models import Customer, Product
 
 _PRODUCTS_QUERY = """
 query Products($cursor: String, $ns: String!, $key: String!, $query: String) {
@@ -85,6 +85,50 @@ query ProductsByIds($ids: [ID!]!, $ns: String!, $key: String!) {
   }
 }
 """.replace("__FIELDS__", _PRODUCT_FIELDS)
+
+# Customers for the e-post recipient list.
+#
+# The email + consent fields were renamed mid-life: `defaultEmailAddress` exists
+# from 2025-04 onward, while `email` / `emailMarketingConsent` are the older
+# spelling (deprecated, but still served by older versions). Neither works on
+# every version, and this store's API version is operator-configurable — so we
+# try the modern shape first and fall back once if the server rejects it, then
+# remember the answer for the rest of the run.
+#
+# `marketingUnsubscribeUrl` is deliberately NOT requested: it requires
+# write_customers and its absence would 403 the entire query.
+_CUSTOMER_FIELDS_MODERN = """
+      defaultEmailAddress { emailAddress marketingState }
+"""
+
+_CUSTOMER_FIELDS_LEGACY = """
+      email
+      emailMarketingConsent { marketingState }
+"""
+
+_CUSTOMERS_QUERY_TEMPLATE = """
+query Customers($cursor: String, $query: String) {
+  customers(first: 250, after: $cursor, query: $query, sortKey: UPDATED_AT, reverse: true) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      firstName
+      lastName
+      numberOfOrders
+      createdAt
+      updatedAt
+__EMAIL_FIELDS__
+      defaultAddress { company city }
+    }
+  }
+}
+"""
+
+
+def _customers_query(modern: bool) -> str:
+    return _CUSTOMERS_QUERY_TEMPLATE.replace(
+        "__EMAIL_FIELDS__", _CUSTOMER_FIELDS_MODERN if modern else _CUSTOMER_FIELDS_LEGACY
+    )
 
 _ORDERS_QUERY = """
 query Orders($cursor: String, $q: String) {
@@ -202,6 +246,8 @@ class ShopifyClient:
         self.cfg = config
         self.session = session or requests.Session()
         self.tokens = TokenManager(config, self.session)
+        # None = not yet determined; see _customers_page.
+        self._customers_modern: Optional[bool] = None
 
     # ---- low level ----
     def _post(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
@@ -337,6 +383,84 @@ class ShopifyClient:
             collections=collections,
             image_url=image_url,
             inventory_updated_at=inv_updated,
+            updated_at=_parse_dt(node.get("updatedAt")) if node.get("updatedAt") else None,
+        )
+
+    # ---- diagnostics ----
+    def access_scopes(self) -> list[str]:
+        """The scopes this token ACTUALLY carries, straight from Shopify.
+
+        Worth having as a first-class call: an app config can list a scope while
+        the token in hand does not carry it (the app version was never released,
+        or the app was not reinstalled after the change). Guessing at that from
+        an ACCESS_DENIED alone wastes a lot of time."""
+        resp = self.session.get(
+            f"https://{self.cfg.store_domain}/admin/oauth/access_scopes.json",
+            headers={"X-Shopify-Access-Token": self.tokens.get()},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return sorted(s["handle"] for s in resp.json().get("access_scopes", []))
+
+    # ---- customers (e-post recipient list) ----
+    def _customers_page(self, variables: dict[str, Any]) -> dict[str, Any]:
+        """One page of customers, resolving the email-field spelling on first use.
+
+        Which spelling the server accepts depends on its API version, and the
+        version is operator-configurable — so probe once rather than hard-coding
+        an assumption that silently breaks when someone bumps it."""
+        if self._customers_modern is None:
+            try:
+                data = self._post(_customers_query(True), variables)
+                self._customers_modern = True
+                return data
+            except ShopifyError as e:
+                if "defaultEmailAddress" not in str(e):
+                    raise  # a real failure (auth, throttle) — don't mask it
+                self._customers_modern = False
+        return self._post(_customers_query(bool(self._customers_modern)), variables)
+
+    def iter_customers(self, query: Optional[str] = None) -> Iterator[Customer]:
+        """Yield customers newest-edited-first. `query` is a Shopify search
+        filter, e.g. "accepts_marketing:true" to narrow server-side — though the
+        result is always re-filtered on marketing_state, never trusted."""
+        cursor: Optional[str] = None
+        while True:
+            data = self._customers_page({"cursor": cursor, "query": query})
+            block = data["customers"]
+            for node in block["nodes"]:
+                yield self._to_customer(node)
+            if not block["pageInfo"]["hasNextPage"]:
+                break
+            cursor = block["pageInfo"]["endCursor"]
+
+    def fetch_customers(self, query: Optional[str] = None,
+                        limit: Optional[int] = None) -> list[Customer]:
+        out: list[Customer] = []
+        for c in self.iter_customers(query):
+            out.append(c)
+            if limit and len(out) >= limit:
+                break
+        return out
+
+    @staticmethod
+    def _to_customer(node: dict[str, Any]) -> Customer:
+        addr = node.get("defaultAddress") or {}
+        # Accept either spelling, so the same parser serves both API versions.
+        default_email = node.get("defaultEmailAddress") or {}
+        consent = node.get("emailMarketingConsent") or default_email
+        raw_email = default_email.get("emailAddress") or node.get("email")
+        email = (raw_email or "").strip().lower() or None
+        return Customer(
+            id=node["id"],
+            email=email,
+            first_name=unescape(node.get("firstName") or "").strip(),
+            last_name=unescape(node.get("lastName") or "").strip(),
+            marketing_state=consent.get("marketingState"),
+            company=unescape(addr.get("company") or "").strip(),
+            city=unescape(addr.get("city") or "").strip(),
+            orders_count=int(node.get("numberOfOrders") or 0),
+            created_at=_parse_dt(node.get("createdAt")) if node.get("createdAt") else None,
             updated_at=_parse_dt(node.get("updatedAt")) if node.get("updatedAt") else None,
         )
 

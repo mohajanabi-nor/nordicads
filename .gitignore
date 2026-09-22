@@ -20,5 +20,10 @@ worker/output/*
 worker/*.sqlite3
 worker/state/
 
+# Local end-to-end audit — kept on the machine, never published.
+# It drives the real app against real customer data, so its screenshots and
+# report can contain personal data and must not reach the repo.
+e2e/
+
 # OS
 .DS_Store
