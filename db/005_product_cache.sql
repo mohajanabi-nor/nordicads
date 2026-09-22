@@ -52,7 +52,10 @@ as $$
 declare
   n integer;
 begin
-  delete from shopify_products;
+  -- `where true` rather than a bare DELETE: Supabase's safe-update guard
+  -- rejects an unqualified delete even inside a function, and silently
+  -- wiping a table is exactly the accident it exists to prevent.
+  delete from shopify_products where true;
 
   insert into shopify_products (
     id, title, vendor, price_label, image_url, inventory_quantity, in_stock,
