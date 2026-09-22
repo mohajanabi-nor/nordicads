@@ -31,6 +31,17 @@ const POLL_INTERVAL_MS = 1_500;
  *  minutes, so this only catches a job that never started. */
 const REMOTE_TIMEOUT_MS = 50 * 60_000;
 
+/**
+ * How often to send a keep-alive when there is nothing to report.
+ *
+ * A render goes quiet for a minute or more while it encodes video, and a
+ * connection carrying no bytes for that long is liable to be closed by a
+ * browser, a proxy or the platform. The client then sees the stream end with no
+ * result and waits forever on a job that actually finished. An SSE comment
+ * costs nothing and is ignored by every parser.
+ */
+const HEARTBEAT_MS = 10_000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -102,6 +113,9 @@ export async function streamRemote(
     return;
   }
 
+  // Structured, not just a log line: the client keeps this so it can pick the
+  // job back up if the connection dies mid-render.
+  send("job", { jobId });
   send("log", { line: `[dashboard] sendte jobb til GitHub Actions (${jobId})` });
 
   let lastSeq = -1;
@@ -234,19 +248,27 @@ export function sseResponse(
   const stream = new ReadableStream({
     async start(controller) {
       let closed = false;
-      const send: Send = (event, data) => {
+      const raw = (chunk: string) => {
         if (closed) return;
         try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          controller.enqueue(encoder.encode(chunk));
         } catch {
           closed = true;
         }
       };
+      const send: Send = (event, data) =>
+        raw(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+      // Keeps the connection warm through the long silences in a render. An SSE
+      // comment is ignored by every parser and costs a handful of bytes.
+      const heartbeat = setInterval(() => raw(": ping\n\n"), HEARTBEAT_MS);
+
       try {
         await run(send, signal);
       } catch (err) {
         send("error", { message: String(err instanceof Error ? err.message : err) });
       } finally {
+        clearInterval(heartbeat);
         closed = true;
         try {
           controller.close();

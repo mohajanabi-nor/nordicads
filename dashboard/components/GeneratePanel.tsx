@@ -31,6 +31,18 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** The job the server is running for us, kept so a dropped connection can be
+   *  picked back up — the render itself carries on regardless of this browser. */
+  const jobRef = useRef<string | null>(null);
+  const seenSeqRef = useRef(-1);
+  /** `phase` as a ref: the async stream loop closes over its first render, so
+   *  reading the state variable there would always see "idle". */
+  const phaseRef = useRef<Phase>("idle");
+
+  function enterPhase(next: Phase) {
+    phaseRef.current = next;
+    setPhase(next);
+  }
 
   const pushLog = (line: string) =>
     setLogs((prev) => {
@@ -40,7 +52,7 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
     });
 
   async function start() {
-    setPhase("running");
+    enterPhase("running");
     setSteps({});
     setLogs([]);
     setResult(null);
@@ -72,12 +84,71 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
           handleEvent(block);
         }
       }
+
+      // The stream ended without saying how it went. The render runs on a
+      // runner and does not care that this connection died, so ask how it is
+      // getting on rather than leaving a spinner turning over finished work.
+      if (phaseRef.current === "running") await followJob();
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        setError(String((err as Error).message));
-        setPhase("error");
+      if ((err as Error).name === "AbortError") return;
+      if (phaseRef.current === "running" && jobRef.current) {
+        pushLog("[dashboard] mistet forbindelsen — følger jobben videre…");
+        await followJob();
+        return;
+      }
+      setError(String((err as Error).message));
+      enterPhase("error");
+    }
+  }
+
+  /**
+   * Follow a job after losing the stream.
+   *
+   * A render outlives the connection watching it, so losing the stream is not
+   * losing the work — without this the operator sees a spinner for a drop that
+   * finished minutes ago, which is indistinguishable from a hang.
+   */
+  async function followJob() {
+    const jobId = jobRef.current;
+    if (!jobId) {
+      setError("Mistet forbindelsen før jobben rakk å starte. Prøv igjen.");
+      enterPhase("error");
+      return;
+    }
+
+    const deadline = Date.now() + 50 * 60_000;
+    while (Date.now() < deadline) {
+      if (abortRef.current?.signal.aborted) return;
+      await new Promise((r) => setTimeout(r, 4000));
+      try {
+        const res = await fetch(
+          `/api/generate/status?jobId=${encodeURIComponent(jobId)}&since=${seenSeqRef.current}`,
+        );
+        const data = await res.json();
+        if (data.error) continue;
+
+        for (const entry of data.logs ?? []) {
+          pushLog(entry.line);
+          seenSeqRef.current = Math.max(seenSeqRef.current, entry.seq);
+        }
+
+        if (data.finished) {
+          if (data.status === "done") {
+            setResult({ drop: data.drop ?? null, assets: 0 });
+            enterPhase("done");
+            onComplete?.();
+          } else {
+            setError(data.error ?? `jobben endte som ${data.status}`);
+            enterPhase("error");
+          }
+          return;
+        }
+      } catch {
+        /* keep trying — the job outlives a flaky connection */
       }
     }
+    setError("Fikk ikke kontakt med jobben. Se GitHub Actions for status.");
+    enterPhase("error");
   }
 
   function handleEvent(block: string) {
@@ -93,18 +164,20 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
     } catch {
       return;
     }
-    if (event === "log") {
+    if (event === "job") {
+      jobRef.current = (payload as { jobId?: string }).jobId ?? null;
+    } else if (event === "log") {
       pushLog(payload.line ?? "");
     } else if (event === "step" && payload.key && payload.status) {
       const { key, status } = payload;
       setSteps((prev) => ({ ...prev, [key]: status }));
     } else if (event === "done") {
       setResult({ drop: payload.drop ?? null, assets: payload.assets ?? 0 });
-      setPhase("done");
+      enterPhase("done");
       onComplete?.();
     } else if (event === "error") {
       setError(payload.message ?? "ukjent feil");
-      setPhase("error");
+      enterPhase("error");
     }
   }
 
