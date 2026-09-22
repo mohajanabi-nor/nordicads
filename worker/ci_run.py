@@ -97,6 +97,27 @@ def set_status(job_id: str, **fields) -> None:
     _patch(f"worker_jobs?id=eq.{job_id}", fields)
 
 
+def claim_job(job_id: str, command: str, argv: list[str]) -> None:
+    """Mark the job running, creating the row if it isn't there.
+
+    The dashboard normally inserts it before dispatching. Upserting anyway is
+    what lets the workflow be triggered straight from the Actions UI with no
+    dashboard involved — which is how this gets tested, and how a render can
+    still be kicked off by hand if the dashboard is down.
+    """
+    _post(
+        "worker_jobs?on_conflict=id",
+        {
+            "id": job_id,
+            "command": command,
+            "inputs": {"argv": argv},
+            "status": "running",
+            "started_at": "now()",
+        },
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
+
+
 def push_lines(job_id: str, start_seq: int, lines: Iterable[str]) -> None:
     rows = [{"job_id": job_id, "seq": start_seq + i, "line": line} for i, line in enumerate(lines)]
     if rows:
@@ -145,7 +166,7 @@ def upload_drop(job_id: str, drop_dir: str) -> None:
     # montage first, then alphabetical — matches how a drop reads top-down
     reels.sort(key=lambda n: (0 if "montage" in n else 1, n))
     _post(
-        "drops",
+        "drops?on_conflict=dir",
         {
             "dir": drop_dir,
             "job_id": job_id,
@@ -171,7 +192,7 @@ def main() -> int:
         return 2
 
     job_id = ns.job_id
-    set_status(job_id, status="running", started_at="now()")
+    claim_job(job_id, argv[0], argv)
 
     env = {
         **os.environ,
