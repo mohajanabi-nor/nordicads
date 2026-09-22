@@ -57,28 +57,35 @@ export class SupabaseError extends Error {
 export type QueryParams = Record<string, string | number | boolean | undefined | null>;
 
 /**
- * Quote a value for PostgREST if it contains syntax the parser would otherwise
- * read as structure. Commas separate list items, dots separate operator from
- * value, and parentheses group — so an unquoted company name like
- * "Nordic, AS (avd. Oslo)" silently becomes a malformed query rather than a
- * search term.
+ * Quoting rules, which differ by operator and are worth stating because getting
+ * them wrong fails SILENTLY — a wrongly quoted `eq` returns an empty result set
+ * rather than an error, which reads as "no such row" forever.
+ *
+ * For a scalar operator the value runs to the end of the query parameter, so
+ * dots, commas and parentheses are already literal and quoting actively breaks
+ * the match: `key=eq."sync.state"` looks for a key whose value includes the
+ * quote characters, and finds nothing.
+ *
+ * Inside `in.(…)` the parentheses and commas ARE structure, so a value
+ * containing them has to be quoted to survive.
  */
-function literal(value: string): string {
-  if (!/[,.:()"'\\ ]/.test(value)) return value;
+function listLiteral(value: string): string {
+  if (!/[,()"\\]/.test(value)) return value;
   return `"${value.replace(/(["\\])/g, "\\$1")}"`;
 }
 
 /** Filter builders. Each returns the `<op>.<value>` half of a query param. */
-export const eq = (v: string | number | boolean) => `eq.${literal(String(v))}`;
-export const neq = (v: string | number | boolean) => `neq.${literal(String(v))}`;
-export const gt = (v: string | number) => `gt.${literal(String(v))}`;
-export const gte = (v: string | number) => `gte.${literal(String(v))}`;
-export const lt = (v: string | number) => `lt.${literal(String(v))}`;
-export const lte = (v: string | number) => `lte.${literal(String(v))}`;
-export const like = (v: string) => `like.${literal(v)}`;
-export const ilike = (v: string) => `ilike.${literal(v)}`;
+export const eq = (v: string | number | boolean) => `eq.${v}`;
+export const neq = (v: string | number | boolean) => `neq.${v}`;
+export const gt = (v: string | number) => `gt.${v}`;
+export const gte = (v: string | number) => `gte.${v}`;
+export const lt = (v: string | number) => `lt.${v}`;
+export const lte = (v: string | number) => `lte.${v}`;
+export const like = (v: string) => `like.${v}`;
+export const ilike = (v: string) => `ilike.${v}`;
 export const is = (v: null | boolean) => `is.${v === null ? "null" : String(v)}`;
-export const inList = (vs: Array<string | number>) => `in.(${vs.map((v) => literal(String(v))).join(",")})`;
+export const inList = (vs: Array<string | number>) =>
+  `in.(${vs.map((v) => listLiteral(String(v))).join(",")})`;
 
 function buildUrl(table: string, params?: QueryParams): string {
   const cfg = supabaseConfig();
