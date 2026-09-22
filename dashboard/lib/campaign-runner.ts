@@ -14,7 +14,7 @@
  *
  * Server-only.
  */
-import { isMailable, markSent, readContacts, recordPermanentFailure } from "./contacts";
+import { mailableEmails, markSent, recordPermanentFailure } from "./contacts";
 import { logError, logInfo, logWarn } from "./eventlog";
 import { campaignHeaders, idempotencyKey } from "./campaign-shared";
 import {
@@ -90,10 +90,12 @@ export function cancelCampaign(id: string): boolean {
 function makeMailableLookup(ttlMs = 2000) {
   let cache: Set<string> | null = null;
   let at = 0;
-  return (): Set<string> => {
+  return async (): Promise<Set<string>> => {
     const now = Date.now();
     if (!cache || now - at > ttlMs) {
-      cache = new Set(readContacts().filter(isMailable).map((c) => c.email));
+      // Asks the database for the mailable set directly rather than reading the
+      // whole list and filtering — the rule is the same one isMailable encodes.
+      cache = await mailableEmails();
       at = now;
     }
     return cache;
@@ -135,7 +137,7 @@ async function runLoop(
   const permanentlyFailed: string[] = [];
 
   // Resume: anything with a terminal outcome already recorded is not retried.
-  const done = completedEmails(manifest.id);
+  const done = await completedEmails(manifest.id);
   const queue = manifest.recipients.filter((e) => !done.has(e));
 
   let sent = 0;
@@ -180,9 +182,9 @@ async function runLoop(
     }
 
     // Honour an unsubscribe that arrived after the campaign started.
-    if (!mailableNow().has(email)) {
+    if (!(await mailableNow()).has(email)) {
       skipped++;
-      appendRecipient(manifest.id, {
+      await appendRecipient(manifest.id, {
         email,
         status: "skipped",
         at: new Date().toISOString(),
@@ -218,7 +220,7 @@ async function runLoop(
         sent++;
         sentEmails.push(email);
         settled = true;
-        appendRecipient(manifest.id, {
+        await appendRecipient(manifest.id, {
           email,
           status: "sent",
           at: new Date().toISOString(),
@@ -240,7 +242,7 @@ async function runLoop(
         // webhook, so it is worth acting on: the address comes off the list
         // rather than being retried on every future campaign.
         if (result.kind === "permanent") permanentlyFailed.push(email);
-        appendRecipient(manifest.id, {
+        await appendRecipient(manifest.id, {
           email,
           status: "failed",
           at: new Date().toISOString(),
@@ -334,8 +336,8 @@ async function runLoop(
 
 /** Resume a campaign that was interrupted. Reuses the frozen manifest, so the
  *  message is identical to what the first recipients received. */
-export function resumeCampaign(id: string, attachment: Attachment | null): boolean {
-  const manifest = readCampaign(id);
+export async function resumeCampaign(id: string, attachment: Attachment | null): Promise<boolean> {
+  const manifest = await readCampaign(id);
   if (!manifest) return false;
   const existing = runners.get(id);
   if (existing && !existing.finished) return false; // already running

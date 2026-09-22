@@ -6,15 +6,13 @@
  * /api/campaign/[id]/stream — so the send is not tied to this request, and the
  * operator can close the tab without stopping it.
  */
-import fs from "node:fs";
-
 import { unsubscribeMailto } from "@/lib/campaign-shared";
 import { startCampaign } from "@/lib/campaign-runner";
 import { createCampaign, newCampaignId, type CampaignManifest } from "@/lib/campaign-store";
-import { isMailable, isValidEmail, normalizeEmail, readContacts } from "@/lib/contacts";
+import { isValidEmail, mailableEmails, normalizeEmail } from "@/lib/contacts";
+import { readDropFile } from "@/lib/drops";
 import { renderCampaign } from "@/lib/email-template";
 import { configProblems, isDryRun, type Attachment } from "@/lib/resend";
-import { resolveDropFile } from "@/lib/worker";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // only starts the run; the loop outlives this
@@ -55,7 +53,7 @@ export async function POST(req: Request) {
       : [];
     // isMailable() is the single rule — it also excludes flagged-invalid
     // addresses and customers no longer in Shopify, not just unticked ones.
-    const mailable = new Set(readContacts().filter(isMailable).map((c) => c.email));
+    const mailable = await mailableEmails();
     const recipients = Array.from(
       new Set(requested.map(normalizeEmail).filter((e) => isValidEmail(e) && mailable.has(e))),
     );
@@ -75,12 +73,12 @@ export async function POST(req: Request) {
 
     let attachment: Attachment | null = null;
     if (body.attach && body.dropDir) {
-      const pdf = resolveDropFile(body.dropDir, "katalog.pdf");
+      const pdf = await readDropFile(body.dropDir, "katalog.pdf");
       if (!pdf) {
         return Response.json({ error: `fant ingen katalog.pdf i ${body.dropDir}` }, { status: 400 });
       }
       // Encoded ONCE for the whole campaign and reused for every recipient.
-      const content = fs.readFileSync(pdf).toString("base64");
+      const content = pdf.toString("base64");
       if (content.length > MAX_ATTACHMENT_BYTES) {
         return Response.json({ error: "vedlegget er for stort (maks ~35 MB)" }, { status: 413 });
       }
@@ -111,7 +109,9 @@ export async function POST(req: Request) {
       dryRun: isDryRun(),
     };
 
-    createCampaign(manifest);
+    // Awaited: the manifest is what a resume replays from, so the send must not
+    // start until it is durably recorded.
+    await createCampaign(manifest);
     startCampaign(manifest, attachment);
 
     return Response.json({

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    return Response.json({ dryRun: isDryRun(), campaigns: listCampaigns() });
+    return Response.json({ dryRun: isDryRun(), campaigns: await listCampaigns() });
   } catch (err) {
     return Response.json({ error: String((err as Error).message) }, { status: 500 });
   }

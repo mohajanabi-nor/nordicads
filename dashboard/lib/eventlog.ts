@@ -1,28 +1,25 @@
 /**
  * The event log behind the Logg tab.
  *
- * The feature now does things while nobody is watching — a sync fires every 24
+ * The feature does things while nobody is watching — a sync fires every 24
  * hours, contacts get auto-unsubscribed when Shopify drops them or Resend
  * rejects them. Every one of those is a consent change made without a human
  * deciding it, so each must leave a trace that can be read back later. An
  * automatic action with no record is indistinguishable from a bug.
  *
- * Append-only NDJSON, one file per month — the same shape as the per-campaign
- * log in campaign-store.ts, for the same reason: a crash can lose at most the
- * line in flight, and appending stays O(1) however long the file grows.
+ * Now in Postgres rather than monthly NDJSON files. The append-only shape is
+ * unchanged, but it survives a hosted app having no writable disk, and it is
+ * readable from more than one instance at a time.
  *
  * Server-only.
  */
-import fs from "node:fs";
-import path from "node:path";
-
-import { EMAIL_STATE_DIR } from "./contacts";
-
-const LOGS_DIR = path.join(EMAIL_STATE_DIR, "logs");
-const SEEN_FILE = path.join(LOGS_DIR, "last-seen.json");
+import { eq, gt, ilike, lt, sbDelete, sbInsert, sbSelectPage } from "./supabase";
+import { getAppState, setAppState } from "./app-state";
 
 /** Log lines carry email addresses, so they are personal data. Keep a year. */
 const RETENTION_MONTHS = 12;
+
+const LAST_SEEN_KEY = "logg.last_seen";
 
 export type LogLevel = "info" | "warn" | "error";
 export type LogSource = "sync" | "campaign" | "contacts" | "scheduler" | "config";
@@ -38,50 +35,38 @@ export interface LogEntry {
   data?: Record<string, unknown>;
 }
 
-function monthFile(date = new Date()): string {
-  return path.join(LOGS_DIR, `${date.toISOString().slice(0, 7)}.ndjson`);
-}
-
-function listLogFiles(): string[] {
-  try {
-    return fs
-      .readdirSync(LOGS_DIR)
-      .filter((f) => /^\d{4}-\d{2}\.ndjson$/.test(f))
-      .sort()
-      .reverse(); // newest month first
-  } catch {
-    return [];
-  }
-}
-
-/** Drop month files past the retention window. Cheap, so it runs on write. */
-function prune(): void {
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - RETENTION_MONTHS);
-  const cutoffKey = cutoff.toISOString().slice(0, 7);
-  for (const name of listLogFiles()) {
-    if (name.slice(0, 7) < cutoffKey) {
-      try {
-        fs.unlinkSync(path.join(LOGS_DIR, name));
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-}
-
 /**
- * Append one entry. Never throws: logging must not be able to break the thing it
- * is describing — a failed write here should not abort a campaign mid-send.
+ * Append one entry. Never rejects: logging must not be able to break the thing
+ * it is describing — a failed write here should not abort a campaign mid-send.
+ *
+ * Callers may await this or not. Awaiting is worth it where the record IS the
+ * point (a consent change), because a hosted function can be frozen the moment
+ * it returns a response, and an un-awaited write can be lost with it.
  */
-export function logEvent(entry: Omit<LogEntry, "at"> & { at?: string }): void {
+export async function logEvent(entry: Omit<LogEntry, "at"> & { at?: string }): Promise<void> {
   try {
-    fs.mkdirSync(LOGS_DIR, { recursive: true });
-    const full: LogEntry = { at: entry.at ?? new Date().toISOString(), ...entry };
-    fs.appendFileSync(monthFile(), JSON.stringify(full) + "\n", "utf8");
-    if (Math.random() < 0.02) prune(); // ~1 in 50 writes; no cron needed
+    await sbInsert("event_log", {
+      at: entry.at ?? new Date().toISOString(),
+      level: entry.level,
+      source: entry.source,
+      event: entry.event,
+      message: entry.message,
+      data: entry.data ?? null,
+    });
+    if (Math.random() < 0.02) await prune(); // ~1 in 50 writes; no cron needed
   } catch {
     /* ignore */
+  }
+}
+
+/** Drop entries past the retention window. */
+async function prune(): Promise<void> {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - RETENTION_MONTHS);
+  try {
+    await sbDelete("event_log", { at: lt(cutoff.toISOString()) });
+  } catch {
+    /* a failed prune is not worth surfacing */
   }
 }
 
@@ -92,24 +77,6 @@ export const logWarn = (source: LogSource, event: string, message: string, data?
   logEvent({ level: "warn", source, event, message, data });
 export const logError = (source: LogSource, event: string, message: string, data?: Record<string, unknown>) =>
   logEvent({ level: "error", source, event, message, data });
-
-function parseFile(name: string): LogEntry[] {
-  try {
-    const raw = fs.readFileSync(path.join(LOGS_DIR, name), "utf8");
-    const out: LogEntry[] = [];
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        out.push(JSON.parse(line));
-      } catch {
-        // A half-written final line after a hard crash — skip it, keep the rest.
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
 
 export interface ReadEventsOptions {
   page?: number;
@@ -129,42 +96,47 @@ export interface EventsPage {
   errorCount: number;
 }
 
-/**
- * Newest first, filtered then paginated.
- *
- * Reads whole month files rather than seeking: a month of this app's activity is
- * a few thousand lines, and the simplicity is worth more than the microseconds.
- * It stops early once enough newer entries exist to satisfy the page AND the
- * filters are unset — the common case of "show me the latest".
- */
-export function readEvents(opts: ReadEventsOptions = {}): EventsPage {
+interface EventRow {
+  at: string;
+  level: LogLevel;
+  source: LogSource;
+  event: string;
+  message: string;
+  data: Record<string, unknown> | null;
+}
+
+/** Newest first, filtered then paginated. */
+export async function readEvents(opts: ReadEventsOptions = {}): Promise<EventsPage> {
   const page = Math.max(1, opts.page ?? 1);
   const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
-  const level = opts.level && opts.level !== "alle" ? opts.level : null;
-  const source = opts.source && opts.source !== "alle" ? opts.source : null;
-  const q = (opts.q ?? "").trim().toLowerCase();
+  const q = (opts.q ?? "").trim();
 
-  const matches: LogEntry[] = [];
-  let errorCount = 0;
+  const filters: Record<string, string> = {};
+  if (opts.level && opts.level !== "alle") filters.level = eq(opts.level);
+  if (opts.source && opts.source !== "alle") filters.source = eq(opts.source);
+  // search_text is a stored column (see db/003) precisely so this stays one filter.
+  if (q) filters.search_text = ilike(`*${q}*`);
 
-  for (const name of listFilesNewestFirst()) {
-    const entries = parseFile(name).reverse(); // within a file, newest last
-    for (const e of entries) {
-      if (e.level === "error") errorCount++;
-      if (level && e.level !== level) continue;
-      if (source && e.source !== source) continue;
-      if (q) {
-        const hay = `${e.message} ${e.event} ${JSON.stringify(e.data ?? {})}`.toLowerCase();
-        if (!hay.includes(q)) continue;
-      }
-      matches.push(e);
-    }
-  }
+  const { rows, total } = await sbSelectPage<EventRow>(
+    "event_log",
+    { select: "at,level,source,event,message,data", order: "at.desc,id.desc", ...filters },
+    (page - 1) * pageSize,
+    pageSize,
+  );
 
-  const total = matches.length;
-  const start = (page - 1) * pageSize;
+  // The error badge counts every error, not just those matching the current
+  // filter — the point is "is anything wrong", independent of what you searched.
+  const errorCount = await countErrors();
+
   return {
-    entries: matches.slice(start, start + pageSize),
+    entries: rows.map((r) => ({
+      at: r.at,
+      level: r.level,
+      source: r.source,
+      event: r.event,
+      message: r.message,
+      ...(r.data ? { data: r.data } : {}),
+    })),
     page,
     pageSize,
     total,
@@ -173,43 +145,28 @@ export function readEvents(opts: ReadEventsOptions = {}): EventsPage {
   };
 }
 
-function listFilesNewestFirst(): string[] {
-  return listLogFiles();
+async function countErrors(since?: string): Promise<number> {
+  const filters: Record<string, string> = { level: eq("error") };
+  if (since) filters.at = gt(since);
+  const { total } = await sbSelectPage("event_log", { select: "id", ...filters }, 0, 1);
+  return total;
 }
 
 // ------------------------------------------------- unseen-error badge -------
 
-/** When the operator last opened the Logg tab. */
-function readLastSeen(): string {
-  try {
-    return JSON.parse(fs.readFileSync(SEEN_FILE, "utf8")).at ?? "";
-  } catch {
-    return "";
-  }
-}
-
-export function markLogsSeen(at = new Date().toISOString()): void {
-  try {
-    fs.mkdirSync(LOGS_DIR, { recursive: true });
-    fs.writeFileSync(SEEN_FILE, JSON.stringify({ at }), "utf8");
-  } catch {
-    /* ignore */
-  }
+export async function markLogsSeen(at = new Date().toISOString()): Promise<void> {
+  await setAppState(LAST_SEEN_KEY, { at });
 }
 
 /**
  * Errors since the tab was last opened — the number on the nav badge. A failure
- * at 03:00 that nobody ever notices is the whole reason this exists, so the
- * count deliberately covers only the current and previous month; anything older
- * is not "new" by any useful definition.
+ * at 03:00 that nobody ever notices is the whole reason this exists.
  */
-export function unseenErrorCount(): number {
-  const since = readLastSeen();
-  let count = 0;
-  for (const name of listLogFiles().slice(0, 2)) {
-    for (const e of parseFile(name)) {
-      if (e.level === "error" && (!since || e.at > since)) count++;
-    }
+export async function unseenErrorCount(): Promise<number> {
+  try {
+    const seen = await getAppState<{ at?: string }>(LAST_SEEN_KEY);
+    return await countErrors(seen?.at);
+  } catch {
+    return 0;
   }
-  return count;
 }

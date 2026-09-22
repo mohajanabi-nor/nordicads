@@ -6,8 +6,6 @@
  * the frozen manifest so the message is identical to what earlier recipients
  * received.
  */
-import fs from "node:fs";
-
 import { cancelCampaign, resumeCampaign } from "@/lib/campaign-runner";
 import {
   isValidCampaignId,
@@ -16,7 +14,7 @@ import {
   summarize,
 } from "@/lib/campaign-store";
 import type { Attachment } from "@/lib/resend";
-import { resolveDropFile } from "@/lib/worker";
+import { readDropFile } from "@/lib/drops";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -25,13 +23,13 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   if (!isValidCampaignId(params.id)) {
     return Response.json({ error: "ugyldig kampanje-id" }, { status: 400 });
   }
-  const manifest = readCampaign(params.id);
+  const manifest = await readCampaign(params.id);
   if (!manifest) {
     return Response.json({ error: "fant ikke kampanjen" }, { status: 404 });
   }
   return Response.json({
-    ...summarize(manifest),
-    recipients: readRecipients(params.id),
+    ...(await summarize(manifest)),
+    recipients: await readRecipients(params.id),
   });
 }
 
@@ -48,7 +46,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     if (action === "resume") {
-      const manifest = readCampaign(params.id);
+      const manifest = await readCampaign(params.id);
       if (!manifest) {
         return Response.json({ error: "fant ikke kampanjen" }, { status: 404 });
       }
@@ -56,7 +54,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       // so resumed recipients get exactly what the first ones got.
       let attachment: Attachment | null = null;
       if (manifest.attachmentName && manifest.dropDir) {
-        const pdf = resolveDropFile(manifest.dropDir, "katalog.pdf");
+        const pdf = await readDropFile(manifest.dropDir, "katalog.pdf");
         if (!pdf) {
           return Response.json(
             { error: `katalog.pdf mangler i ${manifest.dropDir} — kan ikke fortsette med vedlegg` },
@@ -65,14 +63,14 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         }
         attachment = {
           filename: manifest.attachmentName,
-          content: fs.readFileSync(pdf).toString("base64"),
+          content: pdf.toString("base64"),
         };
       }
-      const started = resumeCampaign(params.id, attachment);
+      const started = await resumeCampaign(params.id, attachment);
       if (!started) {
         return Response.json({ error: "kampanjen kjører allerede" }, { status: 409 });
       }
-      return Response.json({ resumed: true, ...summarize(manifest) });
+      return Response.json({ resumed: true, ...(await summarize(manifest)) });
     }
 
     return Response.json({ error: "ukjent handling" }, { status: 400 });

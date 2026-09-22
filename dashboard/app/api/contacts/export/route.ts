@@ -5,7 +5,7 @@
  * is the only record of who has opted out — losing it means re-mailing people who
  * asked not to be mailed. Exporting regularly is a requirement, not a convenience.
  */
-import { contactsCsv } from "@/lib/contacts";
+import { contactsCsv, readContacts } from "@/lib/contacts";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +13,7 @@ export async function GET() {
   try {
     // Lead with a UTF-8 BOM: without it Excel reads the file as the system
     // codepage and mangles æ/ø/å in company names on a double-click.
-    const csv = "﻿" + contactsCsv();
+    const csv = "﻿" + contactsCsv(await readContacts());
     const day = new Date().toISOString().slice(0, 10);
     return new Response(csv, {
       headers: {

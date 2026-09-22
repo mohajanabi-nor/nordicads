@@ -6,7 +6,7 @@
  * the same logging. A manual sync must not be able to do something the automatic
  * one cannot — otherwise the two drift and only one of them is ever tested.
  */
-import { contactStats } from "@/lib/contacts";
+import { contactStats, readContacts } from "@/lib/contacts";
 import { runSync, syncStatus } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,11 @@ export const maxDuration = 300;
 export async function POST() {
   try {
     const outcome = await runSync("manual");
-    return Response.json({ ...outcome, ...contactStats(), sync: syncStatus() });
+    return Response.json({
+      ...outcome,
+      ...contactStats(await readContacts()),
+      sync: await syncStatus(),
+    });
   } catch (err) {
     // runSync has already logged the detail; surface it for the operator too.
     return Response.json(

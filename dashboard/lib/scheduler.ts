@@ -10,19 +10,19 @@
  *
  * Server-only.
  */
-import fs from "node:fs";
-import path from "node:path";
-
 import {
-  EMAIL_STATE_DIR,
   syncFromShopify,
   type ShopifyCustomerRow,
   type SyncOutcome,
 } from "./contacts";
+import { getAppState, setAppState } from "./app-state";
 import { logError, logInfo, logWarn } from "./eventlog";
 import { runWorker } from "./worker";
 
-const STATE_FILE = path.join(EMAIL_STATE_DIR, "sync-state.json");
+/** Was a JSON file next to the contact list; now a row, because a hosted app
+ *  has no disk and two instances must not disagree about when the last sync
+ *  ran — that disagreement costs a duplicate full Shopify fetch. */
+const STATE_KEY = "sync.state";
 const SENTINEL = "CUSTOMERS_JSON ";
 
 /** How often to check whether a sync is due. The interval itself is 24 h; this
@@ -54,18 +54,24 @@ interface Runtime {
 const _g = globalThis as unknown as { _syncRuntime?: Runtime };
 const runtime = (_g._syncRuntime ??= { running: false });
 
-function readState(): SyncState {
+const EMPTY_STATE: SyncState = {
+  lastSyncAt: null,
+  lastResult: null,
+  lastCustomerCount: null,
+  consecutiveFailures: 0,
+};
+
+async function readState(): Promise<SyncState> {
   try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    return (await getAppState<SyncState>(STATE_KEY)) ?? EMPTY_STATE;
   } catch {
-    return { lastSyncAt: null, lastResult: null, lastCustomerCount: null, consecutiveFailures: 0 };
+    return EMPTY_STATE;
   }
 }
 
-function writeState(state: SyncState): void {
+async function writeState(state: SyncState): Promise<void> {
   try {
-    fs.mkdirSync(EMAIL_STATE_DIR, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+    await setAppState(STATE_KEY, state);
   } catch {
     /* a lost timestamp costs one extra sync, nothing more */
   }
@@ -91,8 +97,8 @@ function dueAt(state: SyncState): number {
   return last + intervalMs();
 }
 
-export function syncStatus() {
-  const state = readState();
+export async function syncStatus() {
+  const state = await readState();
   return {
     enabled: isEnabled(),
     running: runtime.running,
@@ -113,7 +119,7 @@ export async function runSync(trigger: "auto" | "manual"): Promise<SyncOutcome> 
   if (runtime.running) throw new Error("En synkronisering kjører allerede.");
   runtime.running = true;
   const startedAt = Date.now();
-  const state = readState();
+  const state = await readState();
 
   try {
     logInfo("sync", "sync.started", `Synkronisering startet (${trigger}).`);
@@ -169,7 +175,7 @@ export async function runSync(trigger: "auto" | "manual"): Promise<SyncOutcome> 
       complete,
     });
 
-    writeState({
+    await writeState({
       lastSyncAt: new Date().toISOString(),
       lastResult: summary,
       lastCustomerCount: complete ? fetched : previous,
@@ -178,7 +184,7 @@ export async function runSync(trigger: "auto" | "manual"): Promise<SyncOutcome> 
     return outcome;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    writeState({
+    await writeState({
       ...state,
       lastSyncAt: new Date().toISOString(),
       lastResult: `Feilet: ${message.slice(0, 200)}`,
@@ -194,9 +200,9 @@ export async function runSync(trigger: "auto" | "manual"): Promise<SyncOutcome> 
   }
 }
 
-function tick(): void {
+async function tick(): Promise<void> {
   if (!isEnabled() || runtime.running) return;
-  const state = readState();
+  const state = await readState();
   if (Date.now() < dueAt(state)) return;
   // Fire and forget: a sync takes tens of seconds and must never sit in front of
   // a page load. Failures are recorded by runSync itself.

@@ -191,7 +191,7 @@ export interface InsertOptions {
 
 export async function sbInsert<T>(
   table: string,
-  rows: Record<string, unknown> | Array<Record<string, unknown>>,
+  rows: object | object[],
   opts: InsertOptions = {},
 ): Promise<T[]> {
   const prefer: string[] = [opts.returning ? "return=representation" : "return=minimal"];
@@ -217,7 +217,7 @@ export async function sbInsert<T>(
 export async function sbUpdate<T>(
   table: string,
   params: QueryParams,
-  patch: Record<string, unknown>,
+  patch: object,
   opts: { returning?: boolean } = { returning: true },
 ): Promise<T[]> {
   const res = await request(buildUrl(table, params), {

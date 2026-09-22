@@ -19,7 +19,7 @@ export async function GET(req: Request) {
     // Selecting recipients should never hand back someone who cannot be mailed.
     const mailableOnly = sp.get("mailableOnly") === "1";
 
-    let matched = filterContacts(readContacts(), q, filter);
+    let matched = filterContacts(await readContacts(), q, filter);
     if (mailableOnly) matched = matched.filter(isMailable);
 
     return Response.json({

@@ -25,7 +25,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       let closed = false;
       const send = (event: string, data: unknown) => {
         if (closed) return;
@@ -53,11 +53,11 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       if (!unsubscribe) {
         // No live runner: the campaign finished earlier (or this process was
         // restarted). Serve the stored outcome so the page still shows results.
-        const manifest = readCampaign(id);
+        const manifest = await readCampaign(id);
         if (!manifest) {
           send("error", { message: "fant ikke kampanjen" });
         } else {
-          const s = summarize(manifest);
+          const s = await summarize(manifest);
           send("progress", { sent: s.sent, failed: s.failed, skipped: s.skipped, total: s.total });
           send("done", {
             campaignId: s.id,

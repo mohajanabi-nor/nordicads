@@ -13,8 +13,9 @@
  *
  * Server-only.
  */
+import fs from "node:fs";
 import { usesGitHubActions } from "./github-actions";
-import { createSignedUrl } from "./supabase-storage";
+import { createSignedUrl, downloadObject } from "./supabase-storage";
 import { sbSelect, sbSelectOne, eq } from "./supabase";
 import { listDrops as listLocalDrops, resolveDropFile } from "./worker";
 import type { DropSummary } from "./types";
@@ -81,4 +82,24 @@ export async function resolveDropTarget(dir: string, file: string): Promise<Drop
 
   const url = await createSignedUrl(DROPS_BUCKET, `${dir}/${file}`);
   return { kind: "redirect", url };
+}
+
+/**
+ * Read a drop asset's bytes server-side.
+ *
+ * Used where the file has to be handled rather than handed to the browser —
+ * attaching the catalogue PDF to a campaign, most of all, including when
+ * resuming a send weeks later. That attachment has to be byte-identical to what
+ * the first recipients got, which is exactly why it is re-read from the stored
+ * drop rather than regenerated.
+ */
+export async function readDropFile(dir: string, file: string): Promise<Buffer | null> {
+  const target = await resolveDropTarget(dir, file);
+  if (!target) return null;
+  if (target.kind === "local") return fs.readFileSync(target.path);
+  try {
+    return await downloadObject(DROPS_BUCKET, `${dir}/${file}`);
+  } catch {
+    return null;
+  }
 }

@@ -11,33 +11,74 @@
  * next week's import cannot silently resubscribe them. Unsubscribed contacts are
  * kept (never deleted) for exactly the same reason.
  *
- * Server-only — this module touches the filesystem.
+ * Storage moved from a single JSON file to Postgres so the app can be hosted.
+ * The in-process mutation lock went with it: it stopped being a lock the moment
+ * more than one instance could run, so the guarantees are now the database's —
+ * a conditional UPDATE, an ON CONFLICT, or a function that runs in one
+ * transaction (see db/004).
+ *
+ * Server-only.
  */
-import fs from "node:fs";
-import path from "node:path";
-
 import type { Contact, ContactFilter, ContactStats, ImportResult } from "./types";
-import { WORKER_DIR } from "./worker";
+import { eq, inList, is, sbDelete, sbInsert, sbRpc, sbSelect, sbUpdate } from "./supabase";
 
-/** Where the contact list and campaign logs live. Already gitignored via
- *  `worker/state/`, so customer addresses can never be committed. */
-export const EMAIL_STATE_DIR =
-  process.env.EMAIL_STATE_DIR || path.join(WORKER_DIR, "state", "email");
-
-const CONTACTS_FILE = path.join(EMAIL_STATE_DIR, "contacts.json");
-
-/** v1 had no shopifyId / invalidEmail / missingInShopify / failureCount. There is
- *  no migration system in this repo, so the loader backfills on read and the
- *  file is only rewritten on the next ordinary write. */
-const SCHEMA_VERSION = 2;
-
-interface ContactsFile {
-  version: number;
-  contacts: Contact[];
+/** Row shape in Postgres. snake_case there, camelCase in the app. */
+interface ContactRow {
+  email: string;
+  shopify_id: string | null;
+  name: string;
+  company: string;
+  city: string;
+  subscribed: boolean;
+  invalid_email: boolean;
+  missing_in_shopify: boolean;
+  last_seen_in_shopify_at: string | null;
+  failure_count: number;
+  added_at: string;
+  source: string;
+  last_sent_at: string | null;
+  note: string;
 }
 
-/** Fill in fields a v1 record predates. Cheap, and keeps every reader honest
- *  without a migration step anyone has to remember to run. */
+function fromRow(r: ContactRow): Contact {
+  return {
+    email: r.email,
+    shopifyId: r.shopify_id,
+    name: r.name ?? "",
+    company: r.company ?? "",
+    city: r.city ?? "",
+    subscribed: r.subscribed,
+    invalidEmail: r.invalid_email,
+    missingInShopify: r.missing_in_shopify,
+    lastSeenInShopifyAt: r.last_seen_in_shopify_at,
+    failureCount: r.failure_count ?? 0,
+    addedAt: r.added_at,
+    source: r.source ?? "ukjent",
+    lastSentAt: r.last_sent_at,
+    note: r.note ?? "",
+  };
+}
+
+function toRow(c: Contact): ContactRow {
+  return {
+    email: c.email,
+    shopify_id: c.shopifyId,
+    name: c.name,
+    company: c.company,
+    city: c.city,
+    subscribed: c.subscribed,
+    invalid_email: c.invalidEmail,
+    missing_in_shopify: c.missingInShopify,
+    last_seen_in_shopify_at: c.lastSeenInShopifyAt,
+    failure_count: c.failureCount,
+    added_at: c.addedAt,
+    source: c.source,
+    last_sent_at: c.lastSentAt,
+    note: c.note,
+  };
+}
+
+/** Fill in fields a partial record lacks, so every reader sees a whole Contact. */
 function upgrade(raw: Partial<Contact> & { email: string }): Contact {
   return {
     email: raw.email,
@@ -68,8 +109,6 @@ export function isMailable(c: Contact): boolean {
   return c.subscribed && !c.invalidEmail && !c.missingInShopify;
 }
 
-// ---------------------------------------------------------------- storage ---
-
 /** Normalise an address for use as the primary key. */
 export function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
@@ -82,55 +121,14 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]{2,}$/.test(email);
 }
 
-export function readContacts(): Contact[] {
-  try {
-    const raw = fs.readFileSync(CONTACTS_FILE, "utf8");
-    const parsed = JSON.parse(raw) as ContactsFile;
-    if (!Array.isArray(parsed.contacts)) return [];
-    return parsed.contacts.filter((c) => c?.email).map(upgrade);
-  } catch {
-    return []; // no file yet, or unreadable — an empty list is the right start
-  }
-}
-
-/**
- * Write the whole list atomically: a partial write here would lose the only
- * record of who has opted out, so we never truncate the real file. Write a temp
- * file, fsync it, then rename — rename is atomic on both macOS and Windows.
- */
-function writeContacts(contacts: Contact[]): void {
-  fs.mkdirSync(EMAIL_STATE_DIR, { recursive: true });
-  const payload: ContactsFile = { version: SCHEMA_VERSION, contacts };
-  const tmp = `${CONTACTS_FILE}.${process.pid}.tmp`;
-  const fd = fs.openSync(tmp, "w");
-  try {
-    fs.writeFileSync(fd, JSON.stringify(payload, null, 2), "utf8");
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmp, CONTACTS_FILE);
-}
-
-/**
- * Serialise every mutation through one promise chain. Two concurrent requests
- * (a bulk toggle and an import, say) would otherwise both read the list, both
- * write it, and the second would silently discard the first's changes.
- * Kept on globalThis so Next.js dev hot-reload doesn't hand out a second lock.
- */
-const _g = globalThis as unknown as { _contactsLock?: Promise<unknown> };
-
-function withLock<T>(fn: () => T): Promise<T> {
-  const run = () => fn();
-  // .then(run, run) so one failed mutation never wedges the queue.
-  const next = (_g._contactsLock ?? Promise.resolve()).then(run, run);
-  _g._contactsLock = next.catch(() => undefined);
-  return next;
-}
-
 // ------------------------------------------------------------------ reads ---
 
-export function contactStats(contacts: Contact[] = readContacts()): ContactStats {
+export async function readContacts(): Promise<Contact[]> {
+  const rows = await sbSelect<ContactRow>("contacts", { limit: 100_000 });
+  return rows.map(fromRow);
+}
+
+export function contactStats(contacts: Contact[]): ContactStats {
   let subscribed = 0;
   let invalid = 0;
   let missing = 0;
@@ -152,8 +150,15 @@ export function contactStats(contacts: Contact[] = readContacts()): ContactStats
 }
 
 /** The addresses a campaign may actually be sent to. */
-export function mailableEmails(): Set<string> {
-  return new Set(readContacts().filter(isMailable).map((c) => c.email));
+export async function mailableEmails(): Promise<Set<string>> {
+  const rows = await sbSelect<{ email: string }>("contacts", {
+    select: "email",
+    subscribed: is(true),
+    invalid_email: is(false),
+    missing_in_shopify: is(false),
+    limit: 100_000,
+  });
+  return new Set(rows.map((r) => r.email));
 }
 
 /**
@@ -198,56 +203,56 @@ export function sortContacts(contacts: Contact[]): Contact[] {
 
 // -------------------------------------------------------------- mutations ---
 
-export function setSubscribed(emails: string[], subscribed: boolean): Promise<number> {
-  const wanted = new Set(emails.map(normalizeEmail));
-  return withLock(() => {
-    const contacts = readContacts();
-    let changed = 0;
-    for (const c of contacts) {
-      if (wanted.has(c.email) && c.subscribed !== subscribed) {
-        c.subscribed = subscribed;
-        changed++;
-      }
-    }
-    if (changed) writeContacts(contacts);
-    return changed;
-  });
+export async function setSubscribed(emails: string[], subscribed: boolean): Promise<number> {
+  const wanted = emails.map(normalizeEmail);
+  if (!wanted.length) return 0;
+  // Filtering on the current value means the count is "actually changed", not
+  // "matched" — and makes the whole thing one atomic statement.
+  const changed = await sbUpdate<{ email: string }>(
+    "contacts",
+    { email: inList(wanted), subscribed: is(!subscribed), select: "email" },
+    { subscribed },
+  );
+  return changed.length;
 }
 
-export function deleteContacts(emails: string[]): Promise<number> {
-  const wanted = new Set(emails.map(normalizeEmail));
-  return withLock(() => {
-    const contacts = readContacts();
-    const kept = contacts.filter((c) => !wanted.has(c.email));
-    const removed = contacts.length - kept.length;
-    if (removed) writeContacts(kept);
-    return removed;
+export async function deleteContacts(emails: string[]): Promise<number> {
+  const wanted = emails.map(normalizeEmail);
+  if (!wanted.length) return 0;
+  // Read first only to report a count; the delete itself is the atomic part.
+  const existing = await sbSelect<{ email: string }>("contacts", {
+    select: "email",
+    email: inList(wanted),
+    limit: 100_000,
   });
+  if (!existing.length) return 0;
+  await sbDelete("contacts", { email: inList(wanted) });
+  return existing.length;
 }
 
 /** Add one contact by hand. Returns false when the address already exists —
  *  same skip rule as import, so this can never resurrect an opt-out either. */
-export function addContact(input: Partial<Contact> & { email: string }): Promise<boolean> {
+export async function addContact(input: Partial<Contact> & { email: string }): Promise<boolean> {
   const email = normalizeEmail(input.email);
-  return withLock(() => {
-    if (!isValidEmail(email)) return false;
-    const contacts = readContacts();
-    if (contacts.some((c) => c.email === email)) return false;
-    contacts.push(
-      upgrade({
-        email,
-        name: (input.name ?? "").trim(),
-        company: (input.company ?? "").trim(),
-        city: (input.city ?? "").trim(),
-        subscribed: input.subscribed ?? true,
-        addedAt: new Date().toISOString(),
-        source: input.source ?? "manual",
-        note: (input.note ?? "").trim(),
-      }),
-    );
-    writeContacts(contacts);
-    return true;
+  if (!isValidEmail(email)) return false;
+  const contact = upgrade({
+    email,
+    name: (input.name ?? "").trim(),
+    company: (input.company ?? "").trim(),
+    city: (input.city ?? "").trim(),
+    subscribed: input.subscribed ?? true,
+    addedAt: new Date().toISOString(),
+    source: input.source ?? "manual",
+    note: (input.note ?? "").trim(),
   });
+  // ON CONFLICT DO NOTHING is the skip rule, enforced by the key rather than by
+  // a read-then-write that two requests could interleave.
+  const inserted = await sbInsert<ContactRow>("contacts", toRow(contact), {
+    onConflict: "email",
+    ignoreDuplicates: true,
+    returning: true,
+  });
+  return inserted.length > 0;
 }
 
 /**
@@ -260,39 +265,26 @@ export function addContact(input: Partial<Contact> & { email: string }): Promise
  * caller can log each one — consent changed without a human deciding it, and
  * that must never be silent.
  */
-export function recordPermanentFailure(emails: string[]): Promise<string[]> {
-  const wanted = new Set(emails.map(normalizeEmail));
-  return withLock(() => {
-    const contacts = readContacts();
-    const unsubscribed: string[] = [];
-    for (const c of contacts) {
-      if (!wanted.has(c.email)) continue;
-      c.failureCount += 1;
-      if (c.subscribed) {
-        c.subscribed = false;
-        unsubscribed.push(c.email);
-      }
-    }
-    if (wanted.size) writeContacts(contacts);
-    return unsubscribed;
-  });
+export async function recordPermanentFailure(emails: string[]): Promise<string[]> {
+  const wanted = emails.map(normalizeEmail);
+  if (!wanted.length) return [];
+  return sbRpc<string[]>("contacts_record_failure", { p_emails: wanted });
 }
 
 /** Stamp lastSentAt after a campaign. Best-effort: never fails a send. */
-export function markSent(emails: string[], at = new Date().toISOString()): Promise<number> {
-  const wanted = new Set(emails.map(normalizeEmail));
-  return withLock(() => {
-    const contacts = readContacts();
-    let changed = 0;
-    for (const c of contacts) {
-      if (wanted.has(c.email)) {
-        c.lastSentAt = at;
-        changed++;
-      }
-    }
-    if (changed) writeContacts(contacts);
-    return changed;
-  });
+export async function markSent(emails: string[], at = new Date().toISOString()): Promise<number> {
+  const wanted = emails.map(normalizeEmail);
+  if (!wanted.length) return 0;
+  try {
+    const changed = await sbUpdate<{ email: string }>(
+      "contacts",
+      { email: inList(wanted), select: "email" },
+      { last_sent_at: at },
+    );
+    return changed.length;
+  } catch {
+    return 0;
+  }
 }
 
 // -------------------------------------------------------------- CSV parse ---
@@ -419,68 +411,70 @@ function consentToSubscribed(raw: string): boolean {
  * is no such column, new contacts default to subscribed. Either way the result
  * says which rule applied, so it is never a silent decision.
  */
-export function importCsv(text: string, source: string): Promise<ImportResult> {
-  return withLock(() => {
-    const rows = parseCsv(text);
-    const result: ImportResult = {
-      added: 0,
-      skippedExisting: 0,
-      flaggedInvalid: 0,
-      noEmail: 0,
-      consentColumn: null,
-      addedUnsubscribed: 0,
-      notes: [],
-    };
-    if (rows.length < 2) {
-      result.notes.push("Fant ingen rader i filen.");
-      return result;
+export async function importCsv(text: string, source: string): Promise<ImportResult> {
+  const rows = parseCsv(text);
+  const result: ImportResult = {
+    added: 0,
+    skippedExisting: 0,
+    flaggedInvalid: 0,
+    noEmail: 0,
+    consentColumn: null,
+    addedUnsubscribed: 0,
+    notes: [],
+  };
+  if (rows.length < 2) {
+    result.notes.push("Fant ingen rader i filen.");
+    return result;
+  }
+
+  const headers = rows[0];
+  const emailIdx = findColumn(headers, EMAIL_COLUMNS);
+  if (emailIdx === -1) {
+    result.notes.push(`Fant ingen e-postkolonne. Forventet en av: ${EMAIL_COLUMNS.join(", ")}.`);
+    return result;
+  }
+  const consentIdx = findColumn(headers, CONSENT_COLUMNS);
+  if (consentIdx !== -1) result.consentColumn = headers[consentIdx];
+
+  const firstIdx = findColumn(headers, FIRST_NAME_COLUMNS);
+  const lastIdx = findColumn(headers, LAST_NAME_COLUMNS);
+  const nameIdx = findColumn(headers, NAME_COLUMNS);
+  const companyIdx = findColumn(headers, COMPANY_COLUMNS);
+  const cityIdx = findColumn(headers, CITY_COLUMNS);
+
+  const known = new Set((await sbSelect<{ email: string }>("contacts", {
+    select: "email",
+    limit: 100_000,
+  })).map((r) => r.email));
+
+  const now = new Date().toISOString();
+  const cell = (row: string[], idx: number) => (idx === -1 ? "" : (row[idx] ?? "").trim());
+  const toInsert: ContactRow[] = [];
+
+  for (const row of rows.slice(1)) {
+    const email = normalizeEmail(cell(row, emailIdx));
+    if (!email) {
+      // No address at all — there is no key to store a contact under.
+      result.noEmail++;
+      continue;
     }
-
-    const headers = rows[0];
-    const emailIdx = findColumn(headers, EMAIL_COLUMNS);
-    if (emailIdx === -1) {
-      result.notes.push(
-        `Fant ingen e-postkolonne. Forventet en av: ${EMAIL_COLUMNS.join(", ")}.`,
-      );
-      return result;
+    if (known.has(email)) {
+      // The whole point: an existing contact is left exactly as it is.
+      result.skippedExisting++;
+      continue;
     }
-    const consentIdx = findColumn(headers, CONSENT_COLUMNS);
-    if (consentIdx !== -1) result.consentColumn = headers[consentIdx];
+    // A malformed address is ADDED and flagged rather than dropped, so a typo
+    // in the source data is something the operator can see and fix. It is
+    // never mailable — isMailable() excludes it regardless of the checkbox.
+    const malformed = !isValidEmail(email);
+    const subscribed =
+      !malformed && (consentIdx === -1 ? true : consentToSubscribed(cell(row, consentIdx)));
+    const name =
+      [cell(row, firstIdx), cell(row, lastIdx)].filter(Boolean).join(" ").trim() ||
+      cell(row, nameIdx);
 
-    const firstIdx = findColumn(headers, FIRST_NAME_COLUMNS);
-    const lastIdx = findColumn(headers, LAST_NAME_COLUMNS);
-    const nameIdx = findColumn(headers, NAME_COLUMNS);
-    const companyIdx = findColumn(headers, COMPANY_COLUMNS);
-    const cityIdx = findColumn(headers, CITY_COLUMNS);
-
-    const contacts = readContacts();
-    const known = new Set(contacts.map((c) => c.email));
-    const now = new Date().toISOString();
-    const cell = (row: string[], idx: number) => (idx === -1 ? "" : (row[idx] ?? "").trim());
-
-    for (const row of rows.slice(1)) {
-      const email = normalizeEmail(cell(row, emailIdx));
-      if (!email) {
-        // No address at all — there is no key to store a contact under.
-        result.noEmail++;
-        continue;
-      }
-      if (known.has(email)) {
-        // The whole point: an existing contact is left exactly as it is.
-        result.skippedExisting++;
-        continue;
-      }
-      // A malformed address is ADDED and flagged rather than dropped, so a typo
-      // in the source data is something the operator can see and fix. It is
-      // never mailable — isMailable() excludes it regardless of the checkbox.
-      const malformed = !isValidEmail(email);
-      const subscribed =
-        !malformed && (consentIdx === -1 ? true : consentToSubscribed(cell(row, consentIdx)));
-      const name =
-        [cell(row, firstIdx), cell(row, lastIdx)].filter(Boolean).join(" ").trim() ||
-        cell(row, nameIdx);
-
-      contacts.push(
+    toInsert.push(
+      toRow(
         upgrade({
           email,
           name,
@@ -491,44 +485,47 @@ export function importCsv(text: string, source: string): Promise<ImportResult> {
           addedAt: now,
           source,
         }),
-      );
-      known.add(email);
-      result.added++;
-      if (malformed) result.flaggedInvalid++;
-      if (!subscribed) result.addedUnsubscribed++;
-    }
+      ),
+    );
+    known.add(email);
+    result.added++;
+    if (malformed) result.flaggedInvalid++;
+    if (!subscribed) result.addedUnsubscribed++;
+  }
 
-    if (result.added) writeContacts(contacts);
+  if (toInsert.length) {
+    // DO NOTHING on conflict rather than merge: the skip rule again, this time
+    // covering a row added by someone else between the read above and here.
+    await sbInsert("contacts", toInsert, { onConflict: "email", ignoreDuplicates: true });
+  }
 
-    // Say out loud which consent rule was applied — this is a legal decision,
-    // not a detail, so it must never be invisible to the operator.
-    if (result.consentColumn) {
-      result.notes.push(
-        `Fant kolonnen «${result.consentColumn}» — ${result.addedUnsubscribed} av ` +
-          `${result.added} nye kontakter er ikke abonnenter.`,
-      );
-    } else {
-      result.notes.push(
-        `Ingen samtykkekolonne funnet — alle ${result.added} nye er satt som abonnenter.`,
-      );
-    }
-    if (result.skippedExisting) {
-      result.notes.push(
-        `${result.skippedExisting} fantes fra før og ble ikke rørt ` +
-          "(av/på-status beholdt).",
-      );
-    }
-    if (result.flaggedInvalid) {
-      result.notes.push(
-        `${result.flaggedInvalid} har ugyldig e-postadresse — lagt inn, men merket og ` +
-          "kan ikke sendes til.",
-      );
-    }
-    if (result.noEmail) {
-      result.notes.push(`${result.noEmail} rader manglet e-post helt og kunne ikke legges inn.`);
-    }
-    return result;
-  });
+  // Say out loud which consent rule was applied — this is a legal decision,
+  // not a detail, so it must never be invisible to the operator.
+  if (result.consentColumn) {
+    result.notes.push(
+      `Fant kolonnen «${result.consentColumn}» — ${result.addedUnsubscribed} av ` +
+        `${result.added} nye kontakter er ikke abonnenter.`,
+    );
+  } else {
+    result.notes.push(
+      `Ingen samtykkekolonne funnet — alle ${result.added} nye er satt som abonnenter.`,
+    );
+  }
+  if (result.skippedExisting) {
+    result.notes.push(
+      `${result.skippedExisting} fantes fra før og ble ikke rørt (av/på-status beholdt).`,
+    );
+  }
+  if (result.flaggedInvalid) {
+    result.notes.push(
+      `${result.flaggedInvalid} har ugyldig e-postadresse — lagt inn, men merket og ` +
+        "kan ikke sendes til.",
+    );
+  }
+  if (result.noEmail) {
+    result.notes.push(`${result.noEmail} rader manglet e-post helt og kunne ikke legges inn.`);
+  }
+  return result;
 }
 
 // ------------------------------------------------------- shopify sync ------
@@ -561,6 +558,9 @@ export interface SyncOutcome extends ImportResult {
   notices: SyncNotice[];
 }
 
+const SYNC_LEASE_KEY = "contacts.sync.lease";
+const SYNC_LEASE_SECONDS = 600;
+
 /**
  * Sync the list from Shopify.
  *
@@ -575,183 +575,217 @@ export interface SyncOutcome extends ImportResult {
  * that opt-out lives here and never reached Shopify (we only hold read_customers).
  * Consent may therefore only ever be tightened automatically; loosening it stays
  * a deliberate act by the operator, via the checkbox.
+ *
+ * The decision logic stays here rather than in SQL because it is the part most
+ * expensive to get subtly wrong. The database supplies what it is better at:
+ * the whole result is applied in one transaction, and a lease stops two syncs
+ * reasoning from the same stale snapshot at once.
  */
-export function syncFromShopify(
+export async function syncFromShopify(
   rows: ShopifyCustomerRow[],
   source: string,
   opts: { complete: boolean } = { complete: false },
 ): Promise<SyncOutcome> {
-  return withLock(() => {
-    const result: SyncOutcome = {
-      added: 0,
-      skippedExisting: 0,
-      flaggedInvalid: 0,
-      // Counted per row below, so `added + skippedExisting + noEmail` reconciles
-      // exactly against what Shopify returned.
-      noEmail: 0,
-      consentColumn: "Shopify marketing consent",
-      addedUnsubscribed: 0,
-      unsubscribedByShopify: 0,
-      emailChanged: 0,
-      markedMissing: 0,
-      incomplete: !opts.complete,
-      notes: [],
-      notices: [],
-    };
-
-    const contacts = readContacts();
-    const byEmail = new Map(contacts.map((c) => [c.email, c]));
-    const byShopifyId = new Map(
-      contacts.filter((c) => c.shopifyId).map((c) => [c.shopifyId as string, c]),
-    );
-    const now = new Date().toISOString();
-    const seen = new Set<string>();
-
-    for (const row of rows) {
-      const email = normalizeEmail(row.email ?? "");
-      if (!email) {
-        result.noEmail++;
-        result.notices.push({
-          level: "warn",
-          event: "sync.noEmail",
-          message: `Kunde uten e-postadresse i Shopify: ${row.name || row.id || "ukjent"}`,
-          data: { shopifyId: row.id ?? null, name: row.name ?? null },
-        });
-        continue;
-      }
-
-      const consented = row.marketing_state === "SUBSCRIBED";
-      const malformed = !isValidEmail(email);
-
-      // Match on the Shopify id FIRST. Keying on email alone means a customer
-      // who changes their address in Shopify silently becomes two contacts here,
-      // the old one lingering and guaranteed to bounce.
-      const byId = row.id ? byShopifyId.get(row.id) : undefined;
-      const existing = byId ?? byEmail.get(email);
-
-      if (existing) {
-        seen.add(existing.email);
-        result.skippedExisting++;
-
-        if (existing.email !== email) {
-          result.notices.push({
-            level: "info",
-            event: "sync.emailChanged",
-            message: `Adresse endret i Shopify: ${existing.email} → ${email}`,
-            data: { from: existing.email, to: email, shopifyId: row.id ?? null },
-          });
-          byEmail.delete(existing.email);
-          existing.email = email;
-          existing.invalidEmail = malformed;
-          byEmail.set(email, existing);
-          seen.add(email);
-          result.emailChanged++;
-        }
-
-        if (row.id && !existing.shopifyId) existing.shopifyId = row.id; // backfill
-        existing.lastSeenInShopifyAt = now;
-        if (existing.missingInShopify) existing.missingInShopify = false; // it's back
-
-        // Tighten only — never flip an unsubscribed contact back on.
-        if (!consented && existing.subscribed) {
-          existing.subscribed = false;
-          result.unsubscribedByShopify++;
-        }
-        continue;
-      }
-
-      const contact = upgrade({
-        email,
-        shopifyId: row.id ?? null,
-        name: (row.name ?? "").trim(),
-        company: (row.company ?? "").trim(),
-        city: (row.city ?? "").trim(),
-        // A malformed address can never be mailable, whatever Shopify says.
-        subscribed: consented && !malformed,
-        invalidEmail: malformed,
-        lastSeenInShopifyAt: now,
-        addedAt: now,
-        source,
-      });
-      contacts.push(contact);
-      byEmail.set(email, contact);
-      if (contact.shopifyId) byShopifyId.set(contact.shopifyId, contact);
-      seen.add(email);
-      result.added++;
-      if (malformed) {
-        result.flaggedInvalid++;
-        result.notices.push({
-          level: "warn",
-          event: "sync.invalidEmail",
-          message: `Ugyldig e-postadresse lagt inn og merket: ${email}`,
-          data: { email, shopifyId: row.id ?? null },
-        });
-      }
-      if (!contact.subscribed) result.addedUnsubscribed++;
-    }
-
-    // ---- customers that vanished from Shopify ----
-    //
-    // Only ever acted on after a sync we KNOW was complete. A throttled or
-    // half-failed fetch makes customers look deleted, and unsubscribing hundreds
-    // of people on that evidence is not recoverable without manual work.
-    if (opts.complete) {
-      for (const c of contacts) {
-        // Never touch rows that never came from Shopify (manual, CSV).
-        if (!c.lastSeenInShopifyAt && !c.shopifyId) continue;
-        if (seen.has(c.email)) continue;
-        if (c.missingInShopify) continue; // already handled on an earlier run
-        c.missingInShopify = true;
-        c.subscribed = false;
-        result.markedMissing++;
-        result.notices.push({
-          level: "warn",
-          event: "contact.missingInShopify",
-          message: `Ikke lenger i Shopify — meldt av: ${c.email}`,
-          data: { email: c.email, shopifyId: c.shopifyId },
-        });
-      }
-    }
-
-    writeContacts(contacts);
-
-    result.notes.push(
-      `${result.added} nye kontakter lagt til ` +
-        `(${result.addedUnsubscribed} av dem uten samtykke i Shopify).`,
-    );
-    if (result.skippedExisting) {
-      result.notes.push(`${result.skippedExisting} fantes fra før — av/på-status beholdt.`);
-    }
-    if (result.emailChanged) {
-      result.notes.push(`${result.emailChanged} fikk oppdatert e-postadresse fra Shopify.`);
-    }
-    if (result.unsubscribedByShopify) {
-      result.notes.push(
-        `${result.unsubscribedByShopify} ble meldt av fordi samtykket er trukket i Shopify.`,
-      );
-    }
-    if (result.flaggedInvalid) {
-      result.notes.push(
-        `${result.flaggedInvalid} har ugyldig adresse — lagt inn, men merket og kan ikke sendes til.`,
-      );
-    }
-    if (result.noEmail) {
-      result.notes.push(
-        `${result.noEmail} kunder i Shopify har ingen e-postadresse — se loggen for hvem.`,
-      );
-    }
-    if (result.markedMissing) {
-      result.notes.push(
-        `${result.markedMissing} finnes ikke lenger i Shopify og ble meldt av.`,
-      );
-    }
-    if (result.incomplete) {
-      result.notes.push(
-        "Synken var ufullstendig, så ingen ble merket som borte fra Shopify.",
-      );
-    }
-    return result;
+  const gotLease = await sbRpc<boolean>("try_claim_lease", {
+    p_key: SYNC_LEASE_KEY,
+    p_seconds: SYNC_LEASE_SECONDS,
   });
+  if (!gotLease) {
+    throw new Error("en synk kjører allerede — vent til den er ferdig");
+  }
+
+  try {
+    return await runSync(rows, source, opts);
+  } finally {
+    await sbRpc("release_lease", { p_key: SYNC_LEASE_KEY }).catch(() => undefined);
+  }
+}
+
+async function runSync(
+  rows: ShopifyCustomerRow[],
+  source: string,
+  opts: { complete: boolean },
+): Promise<SyncOutcome> {
+  const result: SyncOutcome = {
+    added: 0,
+    skippedExisting: 0,
+    flaggedInvalid: 0,
+    // Counted per row below, so `added + skippedExisting + noEmail` reconciles
+    // exactly against what Shopify returned.
+    noEmail: 0,
+    consentColumn: "Shopify marketing consent",
+    addedUnsubscribed: 0,
+    unsubscribedByShopify: 0,
+    emailChanged: 0,
+    markedMissing: 0,
+    incomplete: !opts.complete,
+    notes: [],
+    notices: [],
+  };
+
+  const contacts = await readContacts();
+  const byEmail = new Map(contacts.map((c) => [c.email, c]));
+  const byShopifyId = new Map(
+    contacts.filter((c) => c.shopifyId).map((c) => [c.shopifyId as string, c]),
+  );
+  const now = new Date().toISOString();
+  const seen = new Set<string>();
+
+  /** Contacts whose stored state this sync changed — only these are written. */
+  const touched = new Set<Contact>();
+  /** Address changes, applied before the upsert: email is the primary key, so a
+   *  change is a rename, not a new row. */
+  const renames: { from: string; to: string }[] = [];
+
+  for (const row of rows) {
+    const email = normalizeEmail(row.email ?? "");
+    if (!email) {
+      result.noEmail++;
+      result.notices.push({
+        level: "warn",
+        event: "sync.noEmail",
+        message: `Kunde uten e-postadresse i Shopify: ${row.name || row.id || "ukjent"}`,
+        data: { shopifyId: row.id ?? null, name: row.name ?? null },
+      });
+      continue;
+    }
+
+    const consented = row.marketing_state === "SUBSCRIBED";
+    const malformed = !isValidEmail(email);
+
+    // Match on the Shopify id FIRST. Keying on email alone means a customer
+    // who changes their address in Shopify silently becomes two contacts here,
+    // the old one lingering and guaranteed to bounce.
+    const byId = row.id ? byShopifyId.get(row.id) : undefined;
+    const existing = byId ?? byEmail.get(email);
+
+    if (existing) {
+      seen.add(existing.email);
+      result.skippedExisting++;
+
+      if (existing.email !== email) {
+        result.notices.push({
+          level: "info",
+          event: "sync.emailChanged",
+          message: `Adresse endret i Shopify: ${existing.email} → ${email}`,
+          data: { from: existing.email, to: email, shopifyId: row.id ?? null },
+        });
+        renames.push({ from: existing.email, to: email });
+        byEmail.delete(existing.email);
+        existing.email = email;
+        existing.invalidEmail = malformed;
+        byEmail.set(email, existing);
+        seen.add(email);
+        result.emailChanged++;
+      }
+
+      if (row.id && !existing.shopifyId) existing.shopifyId = row.id; // backfill
+      existing.lastSeenInShopifyAt = now;
+      if (existing.missingInShopify) existing.missingInShopify = false; // it's back
+
+      // Tighten only — never flip an unsubscribed contact back on.
+      if (!consented && existing.subscribed) {
+        existing.subscribed = false;
+        result.unsubscribedByShopify++;
+      }
+      touched.add(existing);
+      continue;
+    }
+
+    const contact = upgrade({
+      email,
+      shopifyId: row.id ?? null,
+      name: (row.name ?? "").trim(),
+      company: (row.company ?? "").trim(),
+      city: (row.city ?? "").trim(),
+      // A malformed address can never be mailable, whatever Shopify says.
+      subscribed: consented && !malformed,
+      invalidEmail: malformed,
+      lastSeenInShopifyAt: now,
+      addedAt: now,
+      source,
+    });
+    contacts.push(contact);
+    byEmail.set(email, contact);
+    if (contact.shopifyId) byShopifyId.set(contact.shopifyId, contact);
+    seen.add(email);
+    touched.add(contact);
+    result.added++;
+    if (malformed) {
+      result.flaggedInvalid++;
+      result.notices.push({
+        level: "warn",
+        event: "sync.invalidEmail",
+        message: `Ugyldig e-postadresse lagt inn og merket: ${email}`,
+        data: { email, shopifyId: row.id ?? null },
+      });
+    }
+    if (!contact.subscribed) result.addedUnsubscribed++;
+  }
+
+  // ---- customers that vanished from Shopify ----
+  //
+  // Only ever acted on after a sync we KNOW was complete. A throttled or
+  // half-failed fetch makes customers look deleted, and unsubscribing hundreds
+  // of people on that evidence is not recoverable without manual work.
+  if (opts.complete) {
+    for (const c of contacts) {
+      // Never touch rows that never came from Shopify (manual, CSV).
+      if (!c.lastSeenInShopifyAt && !c.shopifyId) continue;
+      if (seen.has(c.email)) continue;
+      if (c.missingInShopify) continue; // already handled on an earlier run
+      c.missingInShopify = true;
+      c.subscribed = false;
+      touched.add(c);
+      result.markedMissing++;
+      result.notices.push({
+        level: "warn",
+        event: "contact.missingInShopify",
+        message: `Ikke lenger i Shopify — meldt av: ${c.email}`,
+        data: { email: c.email, shopifyId: c.shopifyId },
+      });
+    }
+  }
+
+  // One transaction for the whole sync: a half-applied result would leave the
+  // list in a state nobody reasoned about.
+  await sbRpc("contacts_apply_sync", {
+    p_renames: renames,
+    p_rows: Array.from(touched).map(toRow),
+  });
+
+  result.notes.push(
+    `${result.added} nye kontakter lagt til ` +
+      `(${result.addedUnsubscribed} av dem uten samtykke i Shopify).`,
+  );
+  if (result.skippedExisting) {
+    result.notes.push(`${result.skippedExisting} fantes fra før — av/på-status beholdt.`);
+  }
+  if (result.emailChanged) {
+    result.notes.push(`${result.emailChanged} fikk oppdatert e-postadresse fra Shopify.`);
+  }
+  if (result.unsubscribedByShopify) {
+    result.notes.push(
+      `${result.unsubscribedByShopify} ble meldt av fordi samtykket er trukket i Shopify.`,
+    );
+  }
+  if (result.flaggedInvalid) {
+    result.notes.push(
+      `${result.flaggedInvalid} har ugyldig adresse — lagt inn, men merket og kan ikke sendes til.`,
+    );
+  }
+  if (result.noEmail) {
+    result.notes.push(
+      `${result.noEmail} kunder i Shopify har ingen e-postadresse — se loggen for hvem.`,
+    );
+  }
+  if (result.markedMissing) {
+    result.notes.push(`${result.markedMissing} finnes ikke lenger i Shopify og ble meldt av.`);
+  }
+  if (result.incomplete) {
+    result.notes.push("Synken var ufullstendig, så ingen ble merket som borte fra Shopify.");
+  }
+  return result;
 }
 
 // ------------------------------------------------------------------ export --
@@ -760,9 +794,9 @@ function csvCell(value: string): string {
   return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
-/** The backup. This list is the only record of who has opted out, and it lives
- *  on one machine — exporting it regularly is a real requirement, not a nicety. */
-export function contactsCsv(contacts: Contact[] = readContacts()): string {
+/** The backup. This list is the only record of who has opted out, so exporting
+ *  it regularly is a real requirement, not a nicety. */
+export function contactsCsv(contacts: Contact[]): string {
   const header = [
     "Email",
     "Name",
