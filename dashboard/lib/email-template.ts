@@ -1,17 +1,8 @@
 /**
  * The campaign email — branded HTML plus a plain-text alternative.
  *
- * Two constraints drive every odd-looking decision in here:
- *
- *  1. **Outlook.** It renders with Word's engine, which ignores flexbox, grid,
- *     most positioning and all external CSS. So: nested tables, inline styles,
- *     and buttons built as a bordered table cell rather than a styled <a>.
- *  2. **Deliverability.** No external stylesheet, no web font (Montserrat would
- *     silently fall back anyway), and always a real text/plain part — HTML-only
- *     mail is a long-standing spam signal.
- *
- * Colours are the dashboard's own tokens (app/globals.css), which in turn match
- * the catalogue renderer, so the mail and the PDF read as one brand.
+ * Tables and inline styles support older email clients such as Outlook.
+ * The caller should send both the HTML and plain-text parts.
  */
 
 /** Palette — kept in sync with app/globals.css and the worker's constants. */
@@ -22,6 +13,9 @@ const INK = "#2d2d34";
 const MUTE = "#968c78";
 const LINE = "#e7ddc6";
 const DARK = "#282a36";
+
+/** Replace this with a publicly accessible HTTPS URL for your logo image. */
+const LOGO_URL = "https://your-domain.com/logo.png";
 
 /** Web fonts do not load in most mail clients; this stack is what actually renders. */
 const FONT =
@@ -52,7 +46,8 @@ export interface SenderIdentity {
 }
 
 /** Footer identity. Norwegian commercial email is expected to carry the sender's
- *  full legal details, and their presence is a mild positive for filters too. */
+ * full legal details, and their presence is a mild positive for filters too.
+ */
 export function senderIdentity(): SenderIdentity {
   return {
     companyName: process.env.EMAIL_COMPANY_NAME || "Nordic Engros AS",
@@ -80,7 +75,9 @@ function paragraphs(body: string): string[] {
     .filter(Boolean);
 }
 
-export function renderCampaign(c: CampaignContent): { html: string; text: string } {
+export function renderCampaign(
+  c: CampaignContent,
+): { html: string; text: string } {
   const who = senderIdentity();
   const paras = paragraphs(c.body);
 
@@ -95,32 +92,47 @@ export function renderCampaign(c: CampaignContent): { html: string; text: string
 
   const attachmentRow = c.attachmentName
     ? `<tr><td style="padding:0 32px 24px;">
-         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
-                style="background:${CREAM};border:1px solid ${LINE};border-radius:12px;">
-           <tr>
-             <td style="padding:14px 18px;font-size:14px;color:${INK};font-family:${FONT};">
-               <strong>Katalogen er vedlagt</strong> som PDF (${esc(c.attachmentName)}).
-             </td>
-           </tr>
-         </table>
-       </td></tr>`
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+               style="background:${CREAM};border:1px solid ${LINE};border-radius:12px;">
+          <tr>
+            <td style="padding:14px 18px;font-size:14px;color:${INK};font-family:${FONT};">
+              <strong>Katalogen er vedlagt</strong> som PDF (${esc(c.attachmentName)}).
+            </td>
+          </tr>
+        </table>
+      </td></tr>`
     : "";
 
-  // The CTA is a table cell with a background, not a styled <a> — Outlook drops
-  // padding and background on inline anchors, which would leave a bare blue link.
+  // VML gives Outlook a rounded button. Other clients use the HTML anchor fallback.
   const ctaRow = c.ctaUrl
     ? `<tr><td align="center" style="padding:8px 32px 32px;">
-         <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-           <tr>
-             <td align="center" bgcolor="${ORANGE}" style="border-radius:12px;">
-               <a href="${esc(c.ctaUrl)}"
-                  style="display:inline-block;padding:14px 32px;font-family:${FONT};
-                         font-size:16px;font-weight:bold;color:${CREAM};
-                         text-decoration:none;border-radius:12px;">${esc(c.ctaLabel)}</a>
-             </td>
-           </tr>
-         </table>
-       </td></tr>`
+        <!--[if mso]>
+        <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml"
+          xmlns:w="urn:schemas-microsoft-com:office:word"
+          href="${esc(c.ctaUrl)}"
+          style="height:48px;v-text-anchor:middle;width:240px;"
+          arcsize="25%" strokecolor="${ORANGE}" fillcolor="${ORANGE}">
+          <w:anchorlock/>
+          <center style="color:${CREAM};font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">
+            ${esc(c.ctaLabel)}
+          </center>
+        </v:roundrect>
+        <![endif]-->
+        <!--[if !mso]><!-->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td align="center" bgcolor="${ORANGE}" style="border-radius:12px;">
+              <a href="${esc(c.ctaUrl)}"
+                 style="display:inline-block;padding:14px 32px;background:${ORANGE};
+                        border-radius:12px;font-family:${FONT};font-size:16px;
+                        font-weight:bold;color:${CREAM};text-decoration:none;">
+                ${esc(c.ctaLabel)}
+              </a>
+            </td>
+          </tr>
+        </table>
+        <!--<![endif]-->
+      </td></tr>`
     : "";
 
   const html = `<!doctype html>
@@ -142,8 +154,18 @@ export function renderCampaign(c: CampaignContent): { html: string; text: string
 
         <tr>
           <td style="background:${DARK};padding:24px 32px;">
-            <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${CREAM};letter-spacing:1px;">NORDIC</span>
-            <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${ORANGE};letter-spacing:3px;">&nbsp;ENGROS</span>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td valign="middle" style="padding-right:12px;">
+                  <img src="${esc(LOGO_URL)}" width="40" height="40" alt="Nordic Engros"
+                       style="display:block;border:0;width:40px;height:40px;">
+                </td>
+                <td valign="middle">
+                  <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${CREAM};letter-spacing:1px;">NORDIC</span>
+                  <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${ORANGE};letter-spacing:3px;">&nbsp;ENGROS</span>
+                </td>
+              </tr>
+            </table>
           </td>
         </tr>
 
@@ -175,7 +197,7 @@ export function renderCampaign(c: CampaignContent): { html: string; text: string
 </body>
 </html>`;
 
-  // Optional lines are `null` and get dropped; "" is a deliberate blank line and
+  // Optional lines are null and get dropped; "" is a deliberate blank line and
   // must survive, or the text part arrives as one cramped block.
   const text = [
     "NORDIC ENGROS",
@@ -184,7 +206,9 @@ export function renderCampaign(c: CampaignContent): { html: string; text: string
     "",
     paras.join("\n\n"),
     "",
-    c.attachmentName ? `Katalogen er vedlagt som PDF (${c.attachmentName}).` : null,
+    c.attachmentName
+      ? `Katalogen er vedlagt som PDF (${c.attachmentName}).`
+      : null,
     c.ctaUrl ? `${c.ctaLabel}: ${c.ctaUrl}` : null,
     "",
     "—",
