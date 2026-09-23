@@ -15,7 +15,7 @@ const LINE = "#e7ddc6";
 const DARK = "#282a36";
 
 /** Replace this with a publicly accessible HTTPS URL for your logo image. */
-const LOGO_URL = "https://your-domain.com/logo.png";
+const LOGO_URL = "https://www.nordicengros.com/cdn/shop/files/artwork_Mr_vector.png?v=1761570697";
 
 /** Web fonts do not load in most mail clients; this stack is what actually renders. */
 const FONT =
