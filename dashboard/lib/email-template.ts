@@ -154,7 +154,7 @@ export function renderCampaign(
              style="width:600px;max-width:100%;background:${CREAM_2};border:1px solid ${LINE};border-radius:16px;overflow:hidden;">
 
         <tr>
-          <td style="background:${DARK};padding:24px 32px;">
+          <td style="background:${CREAM};padding:24px 32px;">
             <table role="presentation" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td valign="middle" style="padding-right:12px;">
