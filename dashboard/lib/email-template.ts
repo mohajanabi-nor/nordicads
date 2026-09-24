@@ -15,7 +15,8 @@ const LINE = "#e7ddc6";
 const DARK = "#282a36";
 
 /** Replace this with a publicly accessible HTTPS URL for your logo image. */
-const LOGO_URL = "https://www.nordicengros.com/cdn/shop/files/artwork_Mr_vector.png?v=1761570697";
+export const LOGO_URL = "https://www.nordicengros.com/cdn/shop/files/artwork_Mr_vector.png?v=1761570697";
+export const LOGO_CID = "nordic-engros-logo";
 
 /** Web fonts do not load in most mail clients; this stack is what actually renders. */
 const FONT =
@@ -110,21 +111,21 @@ export function renderCampaign(
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml"
           xmlns:w="urn:schemas-microsoft-com:office:word"
           href="${esc(c.ctaUrl)}"
-          style="height:48px;v-text-anchor:middle;width:240px;"
-          arcsize="25%" strokecolor="${ORANGE}" fillcolor="${ORANGE}">
+          style="height:52px;v-text-anchor:middle;width:300px;"
+          arcsize="20%" strokecolor="${ORANGE}" fillcolor="${ORANGE}">
           <w:anchorlock/>
-          <center style="color:${CREAM};font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">
+          <center style="color:${CREAM};font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">
             ${esc(c.ctaLabel)}
           </center>
         </v:roundrect>
         <![endif]-->
         <!--[if !mso]><!-->
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="300" style="width:300px;">
           <tr>
             <td align="center" bgcolor="${ORANGE}" style="border-radius:12px;">
               <a href="${esc(c.ctaUrl)}"
-                 style="display:inline-block;padding:14px 32px;background:${ORANGE};
-                        border-radius:12px;font-family:${FONT};font-size:16px;
+                 style="display:block;padding:18px 12px;background:${ORANGE};
+                        border-radius:12px;font-family:${FONT};font-size:14px;line-height:16px;
                         font-weight:bold;color:${CREAM};text-decoration:none;">
                 ${esc(c.ctaLabel)}
               </a>
@@ -157,8 +158,8 @@ export function renderCampaign(
             <table role="presentation" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td valign="middle" style="padding-right:12px;">
-                  <img src="${esc(LOGO_URL)}" width="40" height="40" alt="Nordic Engros"
-                       style="display:block;border:0;width:40px;height:40px;">
+                  <img src="${esc(LOGO_URL)}" width="48" height="48" alt="Nordic Engros"
+                       style="display:block;border:0;width:48px;height:48px;">
                 </td>
                 <td valign="middle">
                   <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${CREAM};letter-spacing:1px;">NORDIC</span>

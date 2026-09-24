@@ -13,6 +13,8 @@
  * Server-only: reads RESEND_API_KEY and must never reach the browser.
  */
 
+import { LOGO_CID, LOGO_URL } from "./email-template";
+
 const RESEND_URL = "https://api.resend.com/emails";
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -161,12 +163,22 @@ export async function sendOne(input: SendInput): Promise<SendResult> {
     from: cfg.from,
     to: [input.to],
     subject: input.subject,
-    html: input.html,
+    // Embed the logo as a CID image so Outlook doesn't need to fetch the
+    // Shopify-hosted image while rendering the message.
+    html: input.html.replace(LOGO_URL, `cid:${LOGO_CID}`),
     text: input.text,
   };
   if (cfg.replyTo) body.reply_to = cfg.replyTo;
   if (input.headers) body.headers = input.headers;
-  if (input.attachment) body.attachments = [input.attachment];
+  body.attachments = [
+    ...(input.attachment ? [input.attachment] : []),
+    {
+      path: LOGO_URL,
+      filename: "nordic-engros-logo.png",
+      content_type: "image/png",
+      content_id: LOGO_CID,
+    },
+  ];
 
   try {
     const res = await fetch(RESEND_URL, {
