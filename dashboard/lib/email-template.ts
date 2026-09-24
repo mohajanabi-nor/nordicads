@@ -14,6 +14,25 @@ const MUTE = "#968c78";
 const LINE = "#e7ddc6";
 const DARK = "#282a36";
 
+/**
+ * The dark variant — "Skifer". Derived from DARK, which the brand bar already
+ * uses, so in dark mode the header belongs to the design instead of sitting on
+ * top of it. The orange is lifted a little: #ef781c is tuned for cream and goes
+ * muddy against a dark ground.
+ */
+const D_PAGE = "#0f1015";
+const D_CARD = "#1a1c24";
+const D_BAR = "#23262f";
+const D_LINE = "#2f323d";
+const D_NOTICE = "#20232b";
+const D_FOOTER = "#15171d";
+const D_HEADING = "#f0eef7";
+const D_TEXT = "#c9c7d4";
+const D_MUTE = "#8e8ca0";
+const D_ORANGE = "#f2892f";
+/** Dark ink on the orange button: white on #f2892f is under 3:1. */
+const D_ON_ORANGE = "#141118";
+
 /** Replace this with a publicly accessible HTTPS URL for your logo image. */
 export const LOGO_URL = "https://www.nordicengros.com/cdn/shop/files/artwork_Mr_vector.png?v=1761570697";
 export const LOGO_CID = "nordic-engros-logo";
@@ -85,7 +104,7 @@ export function renderCampaign(
   const bodyHtml = paras
     .map(
       (p) =>
-        `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:${INK};">` +
+        `<p class="body-text" style="margin:0 0 16px;font-size:16px;line-height:1.6;color:${INK};">` +
         esc(p).replace(/\n/g, "<br>") +
         `</p>`,
     )
@@ -93,10 +112,10 @@ export function renderCampaign(
 
   const attachmentRow = c.attachmentName
     ? `<tr><td style="padding:0 32px 24px;">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+        <table role="presentation" class="notice" cellpadding="0" cellspacing="0" border="0" width="100%"
                style="background:${CREAM};border:1px solid ${LINE};border-radius:12px;">
           <tr>
-            <td style="padding:14px 18px;font-size:14px;color:${INK};font-family:${FONT};">
+            <td class="notice" style="padding:14px 18px;font-size:14px;color:${INK};font-family:${FONT};">
               <strong>Katalogen er vedlagt</strong> som PDF (${esc(c.attachmentName)}).
             </td>
           </tr>
@@ -122,8 +141,8 @@ export function renderCampaign(
         <!--[if !mso]><!-->
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="300" style="width:300px;">
           <tr>
-            <td align="center" bgcolor="${ORANGE}" style="border-radius:12px;">
-              <a href="${esc(c.ctaUrl)}"
+            <td class="cta-cell" align="center" bgcolor="${ORANGE}" style="border-radius:12px;">
+              <a href="${esc(c.ctaUrl)}" class="cta"
                  style="display:block;padding:18px 12px;background:${ORANGE};
                         border-radius:12px;font-family:${FONT};font-size:14px;line-height:16px;
                         font-weight:bold;color:${CREAM};text-decoration:none;">
@@ -143,34 +162,53 @@ export function renderCampaign(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="x-apple-disable-message-reformatting">
 <!--
-  Render light everywhere, so the mail looks like the preview in the dashboard.
+  Light is the design; dark is a designed variant, not an accident.
 
-  Left alone, clients in dark mode rewrite the design rather than displaying it:
-  Apple Mail and Outlook invert backgrounds and text, Gmail shifts them. The
-  cream turns charcoal, the dark header goes pale, and the result is a brand
-  nobody approved. These two declarations are how a client is told the design
-  has one intended appearance — Apple Mail and Outlook honour them outright.
+  Forcing light did not work: Gmail on Android and some iOS clients ignore
+  the color-scheme hint and invert the palette themselves, producing muddy cream
+  and text colours nobody chose. Declaring support for both and supplying a dark
+  palette means a client in dark mode renders OUR dark rather than inventing one.
+
+  Inline styles stay light so the default is correct everywhere, including the
+  older clients that read no CSS at all. The rules below only apply when the
+  reader is actually in dark mode.
 -->
-<meta name="color-scheme" content="light only">
-<meta name="supported-color-schemes" content="light only">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
 <title>${esc(c.headline)}</title>
 <style>
-  :root { color-scheme: light only; supported-color-schemes: light only; }
+  :root { color-scheme: light dark; supported-color-schemes: light dark; }
 
-  /* Gmail and Outlook.com ignore the meta tags and instead prefix their own
-     rules, so the colours that matter are restated under those prefixes. Only
-     the two that carry the brand are pinned; letting body text follow the
-     client keeps the mail readable if a future client does something new. */
-  u + .body .brand-bar,
-  [data-ogsc] .brand-bar { background: ${DARK} !important; }
-  u + .body .brand-name,
-  [data-ogsc] .brand-name { color: #ffffff !important; }
-  u + .body .brand-name-alt,
-  [data-ogsc] .brand-name-alt { color: ${ORANGE} !important; }
-  u + .body .page,
-  [data-ogsc] .page { background: ${CREAM} !important; }
-  u + .body .card,
-  [data-ogsc] .card { background: ${CREAM_2} !important; }
+  @media (prefers-color-scheme: dark) {
+    .page      { background: ${D_PAGE} !important; }
+    .card      { background: ${D_CARD} !important; border-color: ${D_LINE} !important; }
+    .brand-bar { background: ${D_BAR} !important; }
+    .brand-name     { color: #ffffff !important; }
+    .brand-name-alt { color: ${D_ORANGE} !important; }
+    .headline  { color: ${D_HEADING} !important; }
+    .body-text { color: ${D_TEXT} !important; }
+    .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
+    .notice strong { color: ${D_HEADING} !important; }
+    .cta       { background: ${D_ORANGE} !important; color: ${D_ON_ORANGE} !important; }
+    .cta-cell  { background: ${D_ORANGE} !important; }
+    .footer    { background: ${D_FOOTER} !important; border-color: ${D_LINE} !important; color: ${D_MUTE} !important; }
+    .footer strong { color: ${D_HEADING} !important; }
+    .footer a  { color: ${D_MUTE} !important; }
+  }
+
+  /* Outlook.com marks its dark mode with this attribute instead of honouring
+     the media query, so the same palette is repeated under it. */
+  [data-ogsc] .page      { background: ${D_PAGE} !important; }
+  [data-ogsc] .card      { background: ${D_CARD} !important; border-color: ${D_LINE} !important; }
+  [data-ogsc] .brand-bar { background: ${D_BAR} !important; }
+  [data-ogsc] .brand-name     { color: #ffffff !important; }
+  [data-ogsc] .brand-name-alt { color: ${D_ORANGE} !important; }
+  [data-ogsc] .headline  { color: ${D_HEADING} !important; }
+  [data-ogsc] .body-text { color: ${D_TEXT} !important; }
+  [data-ogsc] .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
+  [data-ogsc] .cta       { background: ${D_ORANGE} !important; color: ${D_ON_ORANGE} !important; }
+  [data-ogsc] .footer    { background: ${D_FOOTER} !important; border-color: ${D_LINE} !important; color: ${D_MUTE} !important; }
+  [data-ogsc] .footer a  { color: ${D_MUTE} !important; }
 </style>
 </head>
 <body class="body" style="margin:0;padding:0;background:${CREAM};font-family:${FONT};">
@@ -202,7 +240,7 @@ export function renderCampaign(
 
         <tr>
           <td style="padding:32px 32px 8px;">
-            <h1 style="margin:0 0 20px;font-family:${FONT};font-size:26px;line-height:1.25;color:${INK};">${esc(c.headline)}</h1>
+            <h1 class="headline" style="margin:0 0 20px;font-family:${FONT};font-size:26px;line-height:1.25;color:${INK};">${esc(c.headline)}</h1>
             ${bodyHtml}
           </td>
         </tr>
@@ -211,7 +249,7 @@ export function renderCampaign(
         ${ctaRow}
 
         <tr>
-          <td style="border-top:1px solid ${LINE};padding:20px 32px 28px;font-family:${FONT};font-size:12px;line-height:1.6;color:${MUTE};">
+          <td class="footer" style="border-top:1px solid ${LINE};padding:20px 32px 28px;font-family:${FONT};font-size:12px;line-height:1.6;color:${MUTE};">
             <strong style="color:${INK};">${esc(who.companyName)}</strong><br>
             Org. ${esc(who.orgNr)} · ${esc(who.address)}<br>
             ${esc(who.email)} · ${esc(who.website)}
