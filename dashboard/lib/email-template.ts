@@ -142,19 +142,49 @@ export function renderCampaign(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="x-apple-disable-message-reformatting">
+<!--
+  Render light everywhere, so the mail looks like the preview in the dashboard.
+
+  Left alone, clients in dark mode rewrite the design rather than displaying it:
+  Apple Mail and Outlook invert backgrounds and text, Gmail shifts them. The
+  cream turns charcoal, the dark header goes pale, and the result is a brand
+  nobody approved. These two declarations are how a client is told the design
+  has one intended appearance — Apple Mail and Outlook honour them outright.
+-->
+<meta name="color-scheme" content="light only">
+<meta name="supported-color-schemes" content="light only">
 <title>${esc(c.headline)}</title>
+<style>
+  :root { color-scheme: light only; supported-color-schemes: light only; }
+
+  /* Gmail and Outlook.com ignore the meta tags and instead prefix their own
+     rules, so the colours that matter are restated under those prefixes. Only
+     the two that carry the brand are pinned; letting body text follow the
+     client keeps the mail readable if a future client does something new. */
+  u + .body .brand-bar,
+  [data-ogsc] .brand-bar { background: ${DARK} !important; }
+  u + .body .brand-name,
+  [data-ogsc] .brand-name { color: #ffffff !important; }
+  u + .body .brand-name-alt,
+  [data-ogsc] .brand-name-alt { color: ${ORANGE} !important; }
+  u + .body .page,
+  [data-ogsc] .page { background: ${CREAM} !important; }
+  u + .body .card,
+  [data-ogsc] .card { background: ${CREAM_2} !important; }
+</style>
 </head>
-<body style="margin:0;padding:0;background:${CREAM};font-family:${FONT};">
+<body class="body" style="margin:0;padding:0;background:${CREAM};font-family:${FONT};">
 <!-- preheader: shown next to the subject in the inbox list, hidden in the body -->
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${esc(c.preheader ?? "")}</div>
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${CREAM};">
+<table role="presentation" class="page" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${CREAM}" style="background:${CREAM};">
   <tr>
     <td align="center" style="padding:24px 12px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600"
+      <table role="presentation" class="card" cellpadding="0" cellspacing="0" border="0" width="600"
+             bgcolor="${CREAM_2}"
              style="width:600px;max-width:100%;background:${CREAM_2};border:1px solid ${LINE};border-radius:16px;overflow:hidden;">
 
         <tr>
-          <td style="background:${DARK};padding:24px 32px;">
+          <td class="brand-bar" bgcolor="${DARK}" style="background:${DARK};padding:24px 32px;">
             <table role="presentation" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td valign="middle" style="padding-right:12px;">
@@ -162,8 +192,8 @@ export function renderCampaign(
                        style="display:block;border:0;width:48px;height:48px;">
                 </td>
                 <td valign="middle">
-                  <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${INK};letter-spacing:1px;">NORDIC</span>
-                  <span style="font-family:${FONT};font-size:18px;font-weight:bold;color:${ORANGE};letter-spacing:3px;">&nbsp;ENGROS</span>
+                  <span class="brand-name" style="font-family:${FONT};font-size:18px;font-weight:bold;color:#ffffff;letter-spacing:1px;">NORDIC</span>
+                  <span class="brand-name-alt" style="font-family:${FONT};font-size:18px;font-weight:bold;color:${ORANGE};letter-spacing:3px;">&nbsp;ENGROS</span>
                 </td>
               </tr>
             </table>
