@@ -22,7 +22,7 @@ const DARK = "#282a36";
  */
 const D_PAGE = "#0f1015";
 const D_CARD = "#1a1c24";
-const D_BAR = "#282a36";  // matches the header image, so no seam shows
+const D_BAR = "#23262f";
 const D_LINE = "#2f323d";
 const D_NOTICE = "#20232b";
 const D_FOOTER = "#15171d";
@@ -35,22 +35,6 @@ const D_ON_ORANGE = "#141118";
 
 /** Replace this with a publicly accessible HTTPS URL for your logo image. */
 export const LOGO_URL = "https://www.nordicengros.com/cdn/shop/files/artwork_Mr_vector.png?v=1761570697";
-
-/**
- * The brand bar, as one image.
- *
- * Gmail applies its own dark theme and ignores every hint an email can give it:
- * it flips near-white text to near-black and light backgrounds to dark, so the
- * header arrived as dark letters on a pale lavender slab. It does NOT touch
- * images, so the lockup is baked into one — text included, because the text is
- * exactly what Gmail was inverting.
- *
- * Served from the dashboard's own public folder, so there is no expiry and
- * nothing to keep in sync. The bar keeps its background colour underneath, so a
- * recipient who blocks images still sees a dark bar rather than a white gap.
- */
-export const HEADER_IMG_URL =
-  (process.env.EMAIL_ASSET_BASE || "https://nordicads.vercel.app") + "/email/header.png";
 export const LOGO_CID = "nordic-engros-logo";
 
 /** Web fonts do not load in most mail clients; this stack is what actually renders. */
@@ -197,6 +181,8 @@ export function renderCampaign(
     .page      { background: ${D_PAGE} !important; }
     .card      { background: ${D_CARD} !important; border-color: ${D_LINE} !important; }
     .brand-bar { background: ${D_BAR} !important; }
+    .brand-name     { color: #ffffff !important; }
+    .brand-name-alt { color: ${D_ORANGE} !important; }
     .headline  { color: ${D_HEADING} !important; }
     .body-text { color: ${D_TEXT} !important; }
     .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
@@ -214,6 +200,8 @@ export function renderCampaign(
   [data-ogsc] .page, [data-ogsb] .page      { background: ${D_PAGE} !important; }
   [data-ogsc] .card, [data-ogsb] .card      { background: ${D_CARD} !important; border-color: ${D_LINE} !important; }
   [data-ogsc] .brand-bar, [data-ogsb] .brand-bar { background: ${D_BAR} !important; }
+  [data-ogsc] .brand-name     { color: #ffffff !important; }
+  [data-ogsc] .brand-name-alt { color: ${D_ORANGE} !important; }
   [data-ogsc] .headline  { color: ${D_HEADING} !important; }
   [data-ogsc] .body-text { color: ${D_TEXT} !important; }
   [data-ogsc] .notice, [data-ogsb] .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
@@ -258,9 +246,19 @@ ${darkRules}
              style="width:600px;max-width:100%;background:${CREAM_2};border:1px solid ${LINE};border-radius:16px;overflow:hidden;">
 
         <tr>
-          <td class="brand-bar" bgcolor="${DARK}" style="background:${DARK};font-size:0;line-height:0;">
-            <img src="${esc(HEADER_IMG_URL)}" width="600" alt="Nordic Engros"
-                 style="display:block;width:100%;max-width:600px;height:auto;border:0;">
+          <td class="brand-bar" bgcolor="${DARK}" style="background:${DARK};padding:24px 32px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td valign="middle" style="padding-right:12px;">
+                  <img src="${esc(LOGO_URL)}" width="48" height="48" alt="Nordic Engros"
+                       style="display:block;border:0;width:48px;height:48px;">
+                </td>
+                <td valign="middle">
+                  <span class="brand-name" style="font-family:${FONT};font-size:18px;font-weight:bold;color:#ffffff;letter-spacing:1px;">NORDIC</span>
+                  <span class="brand-name-alt" style="font-family:${FONT};font-size:18px;font-weight:bold;color:${ORANGE};letter-spacing:3px;">&nbsp;ENGROS</span>
+                </td>
+              </tr>
+            </table>
           </td>
         </tr>
 
