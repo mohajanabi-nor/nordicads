@@ -95,8 +95,22 @@ function paragraphs(body: string): string[] {
     .filter(Boolean);
 }
 
+export interface RenderOptions {
+  /**
+   * Render the light design only, with no dark variant at all.
+   *
+   * Used by the dashboard preview. The preview is an iframe, so without this it
+   * follows the OPERATOR's own dark mode and shows a dark email to someone who
+   * is composing a light one — the approval and the artefact stop matching.
+   * What a dark-mode recipient sees is a separate question from what the
+   * composer is deciding on.
+   */
+  forceLight?: boolean;
+}
+
 export function renderCampaign(
   c: CampaignContent,
+  opts: RenderOptions = {},
 ): { html: string; text: string } {
   const who = senderIdentity();
   const paras = paragraphs(c.body);
@@ -155,29 +169,13 @@ export function renderCampaign(
       </td></tr>`
     : "";
 
-  const html = `<!doctype html>
-<html lang="no">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="x-apple-disable-message-reformatting">
-<!--
-  Light is the design; dark is a designed variant, not an accident.
-
-  Forcing light did not work: Gmail on Android and some iOS clients ignore
-  the color-scheme hint and invert the palette themselves, producing muddy cream
-  and text colours nobody chose. Declaring support for both and supplying a dark
-  palette means a client in dark mode renders OUR dark rather than inventing one.
-
-  Inline styles stay light so the default is correct everywhere, including the
-  older clients that read no CSS at all. The rules below only apply when the
-  reader is actually in dark mode.
--->
-<meta name="color-scheme" content="light dark">
-<meta name="supported-color-schemes" content="light dark">
-<title>${esc(c.headline)}</title>
-<style>
-  :root { color-scheme: light dark; supported-color-schemes: light dark; }
+  // The dark variant is omitted entirely for the preview, so the composer
+  // always shows the design being approved rather than one the operator's own
+  // machine chose.
+  const scheme = opts.forceLight ? "light only" : "light dark";
+  const darkRules = opts.forceLight
+    ? ""
+    : `
 
   @media (prefers-color-scheme: dark) {
     .page      { background: ${D_PAGE} !important; }
@@ -196,19 +194,45 @@ export function renderCampaign(
     .footer a  { color: ${D_MUTE} !important; }
   }
 
-  /* Outlook.com marks its dark mode with this attribute instead of honouring
-     the media query, so the same palette is repeated under it. */
-  [data-ogsc] .page      { background: ${D_PAGE} !important; }
-  [data-ogsc] .card      { background: ${D_CARD} !important; border-color: ${D_LINE} !important; }
-  [data-ogsc] .brand-bar { background: ${D_BAR} !important; }
+  /* Outlook.com does not honour the media query. It marks what it rewrote
+     instead: data-ogsc for colour, data-ogsb for background. Both are needed —
+     matching only the first leaves our light backgrounds under its dark text. */
+  [data-ogsc] .page, [data-ogsb] .page      { background: ${D_PAGE} !important; }
+  [data-ogsc] .card, [data-ogsb] .card      { background: ${D_CARD} !important; border-color: ${D_LINE} !important; }
+  [data-ogsc] .brand-bar, [data-ogsb] .brand-bar { background: ${D_BAR} !important; }
   [data-ogsc] .brand-name     { color: #ffffff !important; }
   [data-ogsc] .brand-name-alt { color: ${D_ORANGE} !important; }
   [data-ogsc] .headline  { color: ${D_HEADING} !important; }
   [data-ogsc] .body-text { color: ${D_TEXT} !important; }
-  [data-ogsc] .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
-  [data-ogsc] .cta       { background: ${D_ORANGE} !important; color: ${D_ON_ORANGE} !important; }
-  [data-ogsc] .footer    { background: ${D_FOOTER} !important; border-color: ${D_LINE} !important; color: ${D_MUTE} !important; }
-  [data-ogsc] .footer a  { color: ${D_MUTE} !important; }
+  [data-ogsc] .notice, [data-ogsb] .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
+  [data-ogsc] .cta, [data-ogsb] .cta       { background: ${D_ORANGE} !important; color: ${D_ON_ORANGE} !important; }
+  [data-ogsc] .footer, [data-ogsb] .footer    { background: ${D_FOOTER} !important; border-color: ${D_LINE} !important; color: ${D_MUTE} !important; }
+  [data-ogsc] .footer, [data-ogsb] .footer a  { color: ${D_MUTE} !important; }`;
+
+  const html = `<!doctype html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<!--
+  Light is the design; dark is a designed variant, not an accident.
+
+  Forcing light did not work: Gmail on Android and some iOS clients ignore
+  the color-scheme hint and invert the palette themselves, producing muddy cream
+  and text colours nobody chose. Declaring support for both and supplying a dark
+  palette means a client in dark mode renders OUR dark rather than inventing one.
+
+  Inline styles stay light so the default is correct everywhere, including the
+  older clients that read no CSS at all. The rules below only apply when the
+  reader is actually in dark mode.
+-->
+<meta name="color-scheme" content="${scheme}">
+<meta name="supported-color-schemes" content="${scheme}">
+<title>${esc(c.headline)}</title>
+<style>
+  :root { color-scheme: ${scheme}; supported-color-schemes: ${scheme}; }
+${darkRules}
 </style>
 </head>
 <body class="body" style="margin:0;padding:0;background:${CREAM};font-family:${FONT};">
