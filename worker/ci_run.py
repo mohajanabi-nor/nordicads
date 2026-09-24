@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Iterable
@@ -40,6 +41,12 @@ DROPS_BUCKET = "drops"
 
 # Flush when either trigger fires, so a chatty step does not spam one request
 # per line and a slow step does not sit on unsent output.
+#
+# The seconds trigger needs a clock of its own (see the ticker in main): checked
+# only as each line arrives, it can never fire during the silence it exists for.
+# A burst followed by a long quiet render left the tail of that burst unsent for
+# as long as the render took — the dashboard showed a reel list cut off
+# mid-sentence and no way to tell a slow job from a dead one.
 FLUSH_EVERY_LINES = 25
 FLUSH_EVERY_SECONDS = 2.0
 
@@ -294,13 +301,36 @@ def main() -> int:
     customers_payload: str | None = None
     products_payload: str | None = None
 
+    # Held across the POST, not just the list swap. Releasing it earlier would
+    # let two batches be sent out of order, and the dashboard reads strictly
+    # forwards by seq — it would skip the earlier batch for good rather than
+    # show it late.
+    flush_lock = threading.Lock()
+
     def flush() -> None:
         nonlocal pending, seq, last_flush
-        if pending:
-            push_lines(job_id, seq, pending)
-            seq += len(pending)
-            pending = []
-        last_flush = time.monotonic()
+        with flush_lock:
+            if pending:
+                push_lines(job_id, seq, pending)
+                seq += len(pending)
+                pending = []
+            last_flush = time.monotonic()
+
+    stop_ticker = threading.Event()
+
+    def ticker() -> None:
+        """Flush on time as well as on volume.
+
+        Rendering a drop is minutes of near-silence, and whatever the worker
+        printed on its way in would otherwise sit here until the next line —
+        which is to say, until the slow part everyone is waiting on is over.
+        """
+        while not stop_ticker.wait(0.5):
+            if pending and (time.monotonic() - last_flush) >= FLUSH_EVERY_SECONDS:
+                flush()
+
+    ticker_thread = threading.Thread(target=ticker, daemon=True)
+    ticker_thread.start()
 
     assert proc.stdout is not None
     for raw in proc.stdout:
@@ -321,10 +351,12 @@ def main() -> int:
             if m:
                 drop_dir = m.group(1).replace("\\", "/").rstrip("/").split("/")[-1] or None
 
-        if len(pending) >= FLUSH_EVERY_LINES or (time.monotonic() - last_flush) >= FLUSH_EVERY_SECONDS:
+        if len(pending) >= FLUSH_EVERY_LINES:
             flush()
 
     code = proc.wait()
+    stop_ticker.set()
+    ticker_thread.join(timeout=5)
     flush()
 
     if drop_dir:

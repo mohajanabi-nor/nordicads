@@ -182,15 +182,30 @@ def _render_tasks(tasks: list) -> list[Path]:
         results = [_run_task(tasks[0])]
     else:
         import os
-        from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
         workers = min(len(tasks), max(1, os.cpu_count() or 4))
+        print(f"[social] {workers} parallelle prosesser")
         try:
             with ProcessPoolExecutor(max_workers=workers) as pool:
-                results = list(pool.map(_run_task, tasks))
+                # Submitted rather than mapped, so each reel can be announced as
+                # it lands. `pool.map` returns nothing until the last one is
+                # done, which on a 2-core runner with two dozen reels is many
+                # minutes of total silence — indistinguishable, from the
+                # dashboard, from a job that has died.
+                futures = {pool.submit(_run_task, t): i for i, t in enumerate(tasks)}
+                results = [None] * len(tasks)
+                for finished, fut in enumerate(as_completed(futures), start=1):
+                    idx = futures[fut]
+                    results[idx] = fut.result()
+                    print(f"[social] reel {finished}/{len(tasks)} ferdig: {tasks[idx][0]}",
+                          flush=True)
         except Exception as e:  # noqa: BLE001 — pool unavailable → sequential
             print(f"[social] parallel render unavailable ({e}); rendering serially")
-            results = [_run_task(t) for t in tasks]
+            results = []
+            for i, t in enumerate(tasks, start=1):
+                results.append(_run_task(t))
+                print(f"[social] reel {i}/{len(tasks)} ferdig: {t[0]}", flush=True)
 
     assets: list[Path] = []
     for label, res in results:

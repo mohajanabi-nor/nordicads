@@ -44,8 +44,14 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
     setPhase(next);
   }
 
+  /** "1 PDF + 13 mp4" -> 14. The live stream reports this in its done event;
+   *  after a reconnect the only place it exists is the log itself. */
+  const assetsRef = useRef(0);
+
   const pushLog = (line: string) =>
     setLogs((prev) => {
+      const m = /1 PDF \+ (\d+) mp4/.exec(line);
+      if (m) assetsRef.current = parseInt(m[1], 10) + 1;
       const next = [...prev, line].slice(-200);
       queueMicrotask(() => logRef.current?.scrollTo({ top: 1e9 }));
       return next;
@@ -55,6 +61,7 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
     enterPhase("running");
     setSteps({});
     setLogs([]);
+    assetsRef.current = 0;
     setResult(null);
     setError(null);
 
@@ -108,6 +115,8 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
    * losing the work — without this the operator sees a spinner for a drop that
    * finished minutes ago, which is indistinguishable from a hang.
    */
+  const assetsFromLogs = () => assetsRef.current;
+
   async function followJob() {
     const jobId = jobRef.current;
     if (!jobId) {
@@ -132,9 +141,26 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
           seenSeqRef.current = Math.max(seenSeqRef.current, entry.seq);
         }
 
+        // The checklist comes from the poller too. Without this it would keep
+        // showing whichever step was active when the stream died, for the rest
+        // of the run — a frozen "Henter produkter" over a log that is already
+        // rendering reels reads as a hang, which is exactly what it is not.
+        if (Array.isArray(data.steps)) {
+          setSteps((prev) => {
+            const next = { ...prev };
+            for (const st of data.steps) next[st.key] = st.status;
+            return next;
+          });
+        }
+
         if (data.finished) {
           if (data.status === "done") {
-            setResult({ drop: data.drop ?? null, assets: 0 });
+            setSteps((prev) => {
+              const next = { ...prev };
+              for (const key of Object.keys(next)) if (next[key] === "active") next[key] = "done";
+              return next;
+            });
+            setResult({ drop: data.drop ?? null, assets: assetsFromLogs() });
             enterPhase("done");
             onComplete?.();
           } else {

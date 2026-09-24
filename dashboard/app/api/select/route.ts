@@ -23,19 +23,12 @@
  */
 import { OUTPUT_DIR } from "@/lib/worker";
 import { usesGitHubActions, type RenderInputs } from "@/lib/github-actions";
-import { sseResponse, streamLocal, streamRemote, type Step } from "@/lib/worker-stream";
+import { sseResponse, streamLocal, streamRemote } from "@/lib/worker-stream";
+import { SELECT_STEPS } from "@/lib/pipeline-steps";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800; // Vercel caps this; the job outlives the connection anyway
 
-// Pipeline steps for the manual flow (no baseline commit).
-const STEPS: Step[] = [
-  { key: "fetch", label: "Henter produkter", match: (l) => l.includes("[shopify] fetching") },
-  { key: "classify", label: "Klassifiserer", match: (l) => l.includes("[select]") || l.startsWith("categories=") },
-  { key: "images", label: "Cacher bilder", match: (l) => l.includes("[images] caching") },
-  { key: "pdf", label: "Bygger PDF", match: (l) => l.startsWith("catalogue PDF:") },
-  { key: "reels", label: "Rendrer reels", match: (l) => l.includes("drop written:") },
-];
 
 export async function POST(req: Request) {
   let body: {
@@ -84,8 +77,8 @@ export async function POST(req: Request) {
   return sseResponse(
     (send, signal) =>
       remote
-        ? streamRemote(send, signal, STEPS, inputs)
-        : streamLocal(send, signal, STEPS, args, OUTPUT_DIR),
+        ? streamRemote(send, signal, SELECT_STEPS, inputs)
+        : streamLocal(send, signal, SELECT_STEPS, args, OUTPUT_DIR),
     req.signal,
   );
 }
