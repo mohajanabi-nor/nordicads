@@ -9,6 +9,8 @@ and scaling happen per-card in catalogue.py (matching the prototype).
 from __future__ import annotations
 
 import hashlib
+import os
+import threading
 from pathlib import Path
 from typing import Optional, Union
 
@@ -135,7 +137,14 @@ def process_product(source: Union[str, Path, Image.Image]) -> Image.Image:
         cache_key = _file_hash(Path(source))
         cache_path = CONFIG.snapshot_db.parent / "cutouts" / f"{cache_key}.png"
         if cache_path.exists():
-            return Image.open(cache_path).convert("RGBA")
+            try:
+                return Image.open(cache_path).convert("RGBA")
+            except Exception:  # noqa: BLE001 — unreadable entry, just rebuild it
+                # A cache file that cannot be read is a cache MISS, not a fatal
+                # error. It used to be fatal: one damaged entry aborted the
+                # whole run from deep inside the PDF build, minutes in, with
+                # nothing produced.
+                pass
         rgb = Image.open(source).convert("RGB")
     else:
         rgb = source.convert("RGB")
@@ -151,8 +160,27 @@ def process_product(source: Union[str, Path, Image.Image]) -> Image.Image:
     out = _add_sheen(out)
 
     if cache_path is not None:
+        # Write somewhere else, then move it into place in one step.
+        #
+        # Images are cached by eight threads at once (cli.py) and read back by
+        # the PDF builder, and `out.save(cache_path)` is not atomic: the path
+        # exists from the first byte written, so `cache_path.exists()` says yes
+        # while the file is still half a PNG. A reader that arrives in that gap
+        # gets UnidentifiedImageError. Two products sharing one source image
+        # widen the same gap, since both threads target the same key.
+        #
+        # os.replace is atomic on Windows and POSIX alike, so a reader sees
+        # either no file or the finished one, never a partial.
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        out.save(cache_path)
+        tmp = cache_path.with_name(f"{cache_path.stem}.{os.getpid()}-{threading.get_ident()}.tmp")
+        try:
+            out.save(tmp, format="PNG")
+            os.replace(tmp, cache_path)
+        except Exception:  # noqa: BLE001 — caching is an optimisation, never the job
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
     return out
 
 
