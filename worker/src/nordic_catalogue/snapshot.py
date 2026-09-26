@@ -54,6 +54,24 @@ _PAGE = 1000
 _BATCH = 500
 
 
+def _parse_ts(raw: str | None) -> Optional[datetime]:
+    """Snapshot timestamps, as either backend stores them.
+
+    SQLite keeps whatever isoformat() produced; PostgREST returns an ISO string
+    with a timezone. Anything unparseable is treated as absent rather than
+    guessed at, because these timestamps decide which baseline a product is
+    compared against — a wrong one silently mislabels a delivery.
+    """
+    if not raw:
+        return None
+    text = raw.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _supabase_config() -> Optional[tuple[str, str]]:
     url = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or ""
@@ -85,6 +103,21 @@ class _SqliteBackend:
     def previous_quantities(self) -> dict[str, int]:
         cur = self._conn.execute("SELECT sku, quantity FROM latest_inventory")
         return {sku: qty for sku, qty in cur.fetchall()}
+
+    def run_timestamps(self, limit: int) -> list[tuple[int, datetime]]:
+        rows = self._conn.execute(
+            "SELECT id, ts FROM runs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [(r[0], _parse_ts(r[1])) for r in rows if _parse_ts(r[1])]
+
+    def quantities_at_runs(self, run_ids: Iterable[int]) -> dict[int, dict[str, int]]:
+        out: dict[int, dict[str, int]] = {}
+        for run_id in run_ids:
+            cur = self._conn.execute(
+                "SELECT sku, quantity FROM run_items WHERE run_id = ?", (run_id,)
+            )
+            out[run_id] = {sku: qty for sku, qty in cur.fetchall()}
+        return out
 
     def commit_run(self, items: list[tuple[str, int]]) -> int:
         ts = datetime.now(timezone.utc).isoformat()
@@ -167,6 +200,38 @@ class _PostgresBackend:
             offset += _PAGE
         return out
 
+    def run_timestamps(self, limit: int) -> list[tuple[int, datetime]]:
+        rows = self._get(
+            f"snapshot_runs?select=id,ts&order=id.desc&limit={int(limit)}"
+        ).json()
+        out = []
+        for r in rows:
+            ts = _parse_ts(r["ts"])
+            if ts:
+                out.append((r["id"], ts))
+        return out
+
+    def quantities_at_runs(self, run_ids: Iterable[int]) -> dict[int, dict[str, int]]:
+        ids = [int(r) for r in run_ids]
+        out: dict[int, dict[str, int]] = {rid: {} for rid in ids}
+        if not ids:
+            return out
+        id_list = ",".join(str(i) for i in ids)
+        offset = 0
+        while True:
+            resp = self._get(
+                f"snapshot_run_items?select=run_id,sku,quantity"
+                f"&run_id=in.({id_list})&order=run_id.asc,sku.asc",
+                headers={"Range-Unit": "items", "Range": f"{offset}-{offset + _PAGE - 1}"},
+            )
+            rows = resp.json()
+            for r in rows:
+                out[r["run_id"]][r["sku"]] = r["quantity"]
+            if len(rows) < _PAGE:
+                break
+            offset += _PAGE
+        return out
+
     def commit_run(self, items: list[tuple[str, int]]) -> int:
         ts = datetime.now(timezone.utc).isoformat()
         created = self._post(
@@ -222,6 +287,47 @@ class SnapshotStore:
 
     def previous_quantities(self) -> dict[str, int]:
         return self._backend.previous_quantities()
+
+    def baselines_before(
+        self, moments: Iterable[Optional[datetime]], history: int = 12
+    ) -> dict[Optional[datetime], dict[str, int]]:
+        """For each moment, stock as it stood at the last run BEFORE it.
+
+        The picker asks "what arrived recently", and answers it by comparing
+        current stock against a baseline. Which baseline is the whole question.
+        Against the NEWEST one it is wrong in a specific and damaging way: a
+        `generate` commits a new baseline as part of its run, so for the rest of
+        the day every delivery it just recorded reads as "no change" — the goods
+        land, the drop is built from them, and the picker goes blind to them
+        minutes later. That is not an edge case; it is what happens every time
+        a drop is generated on a delivery day.
+
+        Comparing each product against the last run before ITS OWN last stock
+        change removes the coupling: a baseline committed after the delivery is
+        simply not the one that delivery is measured against.
+
+        Returns a map keyed by the moments passed in, so the caller can look up
+        per product without re-deriving anything. Only the runs actually needed
+        are read.
+        """
+        runs = self._backend.run_timestamps(history)  # newest first
+        if not runs:
+            return {}
+
+        # Which run answers each moment: the newest one that predates it. A
+        # moment older than every run we hold falls back to the oldest, where
+        # the delta is 0 by construction — the change is already baked in.
+        oldest_id = runs[-1][0]
+        chosen: dict[Optional[datetime], int] = {}
+        for moment in moments:
+            if moment is None:
+                chosen[moment] = runs[0][0]
+                continue
+            pick = next((rid for rid, ts in runs if ts < moment), oldest_id)
+            chosen[moment] = pick
+
+        quantities = self._backend.quantities_at_runs(set(chosen.values()))
+        return {moment: quantities.get(rid, {}) for moment, rid in chosen.items()}
 
     def commit_run(self, items: Iterable[tuple[str, int]]) -> int:
         """Persist a new snapshot. items = iterable of (sku, quantity).

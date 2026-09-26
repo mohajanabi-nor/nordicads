@@ -517,22 +517,32 @@ def cmd_products(args: argparse.Namespace) -> int:
     products = client.fetch_products(query=query)
     print(f"[shopify] {len(products)} products fetched")
 
-    # Restock signal: compare each product's current stock against the last
-    # committed snapshot baseline (per SKU). This is the SAME baseline the real
-    # `generate` run uses, so "restocked +N" here means exactly what the Modell A
-    # gate means — units added since the last drop, NOT units sold. Read-only:
-    # we only READ previous_quantities(), never commit a new run.
+    # Restock signal: units added since stock last moved, per SKU.
+    #
+    # The comparison used to be against the newest committed baseline, which
+    # broke on exactly the day it mattered most. `generate` commits a baseline
+    # as part of its run, so a drop built the morning a delivery lands leaves
+    # every one of those arrivals reading "+0" for the rest of the day: the
+    # picker went blind to the truck minutes after the catalogue was built from
+    # it. Seen live on 2026-09-26 — 204 restocks in the drop, 1 visible in the
+    # picker.
+    #
+    # Each product is now measured against the last run BEFORE its own stock
+    # last changed, so a baseline committed after the delivery is not the one
+    # the delivery is judged by. Read-only: no run is ever committed here.
     store = SnapshotStore(CONFIG.snapshot_db)
     try:
-        prev = store.previous_quantities()  # {sku: qty} or empty on first run
+        moments = {p.inventory_updated_at for p in products}
+        baselines = store.baselines_before(moments)
     finally:
         store.close()
 
     def restock_increase(p):
-        """Units added vs baseline (>=0), or None when there's no baseline for
-        this SKU (first run / never-seen product) — None means 'unknown', which
-        the picker treats as 'not a confirmed restock'."""
-        if not p.sku or p.sku not in prev:
+        """Units added since this product's stock last moved (>=0), or None when
+        no baseline covers the SKU (first run / never-seen product) — None means
+        'unknown', which the picker treats as 'not a confirmed restock'."""
+        prev = baselines.get(p.inventory_updated_at)
+        if not p.sku or not prev or p.sku not in prev:
             return None
         return max(0, p.inventory_quantity - prev[p.sku])
 
