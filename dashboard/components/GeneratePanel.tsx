@@ -48,14 +48,18 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
    *  after a reconnect the only place it exists is the log itself. */
   const assetsRef = useRef(0);
 
-  const pushLog = (line: string) =>
+  const pushLog = (line: string) => {
+    // Read the count HERE, not inside the updater below: React may defer that
+    // callback, and the reconnect path reads the ref on the very next line —
+    // which is how a finished drop reported "0 filer".
+    const m = /1 PDF \+ (\d+) mp4/.exec(line);
+    if (m) assetsRef.current = parseInt(m[1], 10) + 1;
     setLogs((prev) => {
-      const m = /1 PDF \+ (\d+) mp4/.exec(line);
-      if (m) assetsRef.current = parseInt(m[1], 10) + 1;
       const next = [...prev, line].slice(-200);
       queueMicrotask(() => logRef.current?.scrollTo({ top: 1e9 }));
       return next;
     });
+  };
 
   async function start() {
     enterPhase("running");
@@ -191,7 +195,7 @@ export default function GeneratePanel({ onComplete }: { onComplete?: () => void 
       return;
     }
     if (event === "job") {
-      jobRef.current = (payload as { jobId?: string }).jobId ?? null;
+      jobRef.current = payload.jobId ?? null;
     } else if (event === "log") {
       pushLog(payload.line ?? "");
     } else if (event === "step" && payload.key && payload.status) {

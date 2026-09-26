@@ -22,7 +22,11 @@ export const GENERATE_STEPS: Step[] = [
   { key: "images", label: "Cacher bilder", match: (l) => l.includes("[images] caching") },
   { key: "pdf", label: "Bygger PDF", match: (l) => l.startsWith("catalogue PDF:") },
   { key: "baseline", label: "Baseline lagret", match: (l) => l.includes("snapshot baseline committed") },
-  { key: "reels", label: "Rendrer reels", match: (l) => l.startsWith("drop written:") || l.includes("manual drop written:") },
+  // Matches the line that ANNOUNCES the render, not the one that reports it
+  // finished. Keyed on "drop written:" the step only lit up once the reels were
+  // already done, so the longest stage of the run — twelve minutes of encoding
+  // on a two-core runner — showed the previous step still spinning.
+  { key: "reels", label: "Rendrer reels", match: (l) => l.startsWith("[social] rendrer ") || l.startsWith("drop written:") || l.includes("manual drop written:") },
 ];
 
 /** The manual flow, which renders a hand-picked selection and commits no baseline. */
@@ -31,7 +35,7 @@ export const SELECT_STEPS: Step[] = [
   { key: "classify", label: "Klassifiserer", match: (l) => l.includes("[select]") || l.startsWith("categories=") },
   { key: "images", label: "Cacher bilder", match: (l) => l.includes("[images] caching") },
   { key: "pdf", label: "Bygger PDF", match: (l) => l.startsWith("catalogue PDF:") },
-  { key: "reels", label: "Rendrer reels", match: (l) => l.includes("drop written:") },
+  { key: "reels", label: "Rendrer reels", match: (l) => l.startsWith("[social] rendrer ") || l.includes("drop written:") },
 ];
 
 /**

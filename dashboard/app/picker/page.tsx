@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { PickerProduct, ProductsResponse, RunEvent, StepEvent } from "@/lib/types";
+import { freshSignal } from "@/lib/picker-order";
 
 const WINDOWS = [
   { days: 1, label: "I dag" },
@@ -33,36 +34,6 @@ function fmtDate(iso: string | null): string {
   }
 }
 
-function withinDays(iso: string | null, days: number): boolean {
-  if (!iso) return false;
-  const t = new Date(iso).getTime();
-  // Calendar-aligned, matching the server: snap to start of the local day and
-  // count whole days back, so the card badges agree with what the window filter
-  // actually included ("I dag" = since local midnight, not a rolling 24h).
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const cutoff = start.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
-  return Number.isFinite(t) && t >= cutoff;
-}
-
-/** Why is this product in the window? new arrival, or restocked +N. Mirrors the
- *  server's isFresh(): NEW wins, else a confirmed restock. */
-function freshSignal(
-  p: PickerProduct,
-  days: number,
-  minRestock: number,
-): { kind: "nyhet" | "restock"; text: string } | null {
-  if (withinDays(p.created_at, days)) return { kind: "nyhet", text: "NYHET" };
-  if (
-    p.restock_increase != null &&
-    p.restock_increase >= minRestock &&
-    withinDays(p.inventory_updated_at, days)
-  ) {
-    return { kind: "restock", text: `+${p.restock_increase} inn` };
-  }
-  return null;
-}
-
 export default function PickerPage() {
   const [windowDays, setWindowDays] = useState(14);
   const [minRestock, setMinRestock] = useState(5);
@@ -75,6 +46,10 @@ export default function PickerPage() {
   const [products, setProducts] = useState<PickerProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** "a refetch is running in the background" — not an error, and not a reason
+   *  to clear the grid the operator is working in. */
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+  const refreshPoll = useRef<ReturnType<typeof setInterval> | null>(null);
   const [search, setSearch] = useState("");
   const [hideOos, setHideOos] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -94,7 +69,48 @@ export default function PickerPage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [result, setResult] = useState<{ drop: string | null; assets: number } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  /** The job the runner is doing for us. A render outlives the connection that
+   *  started it, so losing the stream is not losing the work — but only if we
+   *  kept the id. */
+  const jobRef = useRef<string | null>(null);
+  const seenSeqRef = useRef(-1);
+  /** `phase` as a ref: the async stream loop closes over its first render, so
+   *  reading the state variable there would always see the old value. */
+  const phaseRef = useRef<RunPhase>("idle");
   const logRef = useRef<HTMLDivElement>(null);
+
+  /** Reload once the dispatched fetch has finished, so the operator does not
+   *  have to guess when to press the button again. Bounded: a job that never
+   *  reports back stops being waited on rather than polling for ever. */
+  const watchRefresh = useCallback(
+    (jobId: string, days: number, minInc: number, opts?: { offers?: boolean; stocked?: boolean }) => {
+      if (refreshPoll.current) clearInterval(refreshPoll.current);
+      const started = Date.now();
+      refreshPoll.current = setInterval(async () => {
+        if (Date.now() - started > 5 * 60_000) {
+          if (refreshPoll.current) clearInterval(refreshPoll.current);
+          setRefreshNote("Oppdateringen tok for lang tid — prøv ↻ igjen.");
+          return;
+        }
+        try {
+          const r = await fetch(`/api/generate/status?jobId=${encodeURIComponent(jobId)}&since=99999`);
+          const d = await r.json();
+          if (!d.finished) return;
+          if (refreshPoll.current) clearInterval(refreshPoll.current);
+          setRefreshNote(null);
+          load(days, minInc, opts);
+        } catch {
+          /* transient — the next tick tries again */
+        }
+      }, 5000);
+    },
+    // `load` is defined below and is stable; referencing it here would be a
+    // cycle, so the reload is called through the ref-free closure instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  useEffect(() => () => { if (refreshPoll.current) clearInterval(refreshPoll.current); }, []);
 
   const load = useCallback(async (days: number, minInc: number, opts?: { offers?: boolean; stocked?: boolean; refresh?: boolean }) => {
     setLoading(true);
@@ -111,8 +127,33 @@ export default function PickerPage() {
           ? `stocked=1&since=${days}&limit=500`
           : `since=${days}&minRestock=${minInc}&limit=500`;
       const res = await fetch(`/api/products?${qs}${opts?.refresh ? "&refresh=1" : ""}`);
-      const data: ProductsResponse & { error?: string } = await res.json();
+      const data: ProductsResponse & {
+        error?: string;
+        refreshing?: boolean;
+        note?: string;
+        jobId?: string;
+      } = await res.json();
       if (data.error) throw new Error(data.error);
+
+      // A hosted refresh cannot fetch inside the request — it dispatches a job
+      // and answers with an empty list. Rendering that emptied the whole grid
+      // and said nothing, so pressing ↻ looked like it had destroyed the
+      // screen. Keep what is on it, say what is happening, and swap the list
+      // in when the fetch has actually landed.
+      if (data.refreshing) {
+        setRefreshNote(data.note ?? "Henter produkter i bakgrunnen…");
+        // Deliberately WITHOUT `refresh` — the reload must be an ordinary
+        // read. Passing opts straight through kept refresh=1 set, so the
+        // reload asked for another refresh, got another "refreshing" answer,
+        // and the banner never cleared: a loop that polls for ever and never
+        // shows the new list. (TypeScript does not catch it: excess-property
+        // checks only apply to object literals, and this was a variable.)
+        if (data.jobId) {
+          watchRefresh(data.jobId, days, minInc, { offers: opts?.offers, stocked: opts?.stocked });
+        }
+        return;
+      }
+      setRefreshNote(null);
       setProducts(data.products ?? []);
     } catch (err) {
       setLoadError(String((err as Error).message));
@@ -120,7 +161,7 @@ export default function PickerPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [watchRefresh]);
 
   useEffect(() => {
     load(windowDays, minRestock, { offers: offersOnly, stocked: stockedOnly });
@@ -191,12 +232,90 @@ export default function PickerPage() {
 
   const clearSelection = () => setSelected(new Set());
 
-  const pushLog = (line: string) =>
+  /** "1 PDF + 4 mp4" -> 5. The live stream reports this in its done event; once
+   *  the stream is gone the log line is the only place it exists. */
+  const assetsRef = useRef(0);
+
+  const pushLog = (line: string) => {
+    // Read the count HERE, not inside the updater below: React may defer that
+    // callback, and the reconnect path reads the ref on the very next line —
+    // which is how a finished drop reported "0 filer".
+    const m = /1 PDF \+ (\d+) mp4/.exec(line);
+    if (m) assetsRef.current = parseInt(m[1], 10) + 1;
     setLogs((prev) => {
       const next = [...prev, line].slice(-200);
       queueMicrotask(() => logRef.current?.scrollTo({ top: 1e9 }));
       return next;
     });
+  };
+
+  function enterPhase(next: RunPhase) {
+    phaseRef.current = next;
+    setPhase(next);
+  }
+
+  /**
+   * Follow the job after the stream goes.
+   *
+   * A manual render takes minutes and the streaming function is capped well
+   * below that, so the connection is cut on any sizeable selection. Until now
+   * the read loop simply ended and the page sat at "running" for ever: the
+   * reels finished on the runner, the drop was uploaded, and the operator was
+   * still watching a spinner with no way to tell that from a crash.
+   */
+  async function followJob() {
+    const jobId = jobRef.current;
+    if (!jobId) {
+      setRunError("Mistet forbindelsen før jobben rakk å starte. Prøv igjen.");
+      enterPhase("error");
+      return;
+    }
+    const deadline = Date.now() + 50 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 4000));
+      try {
+        const res = await fetch(
+          `/api/generate/status?flow=select&jobId=${encodeURIComponent(jobId)}&since=${seenSeqRef.current}`,
+        );
+        const data = await res.json();
+        if (data.error) continue;
+
+        for (const entry of data.logs ?? []) {
+          pushLog(entry.line);
+          seenSeqRef.current = Math.max(seenSeqRef.current, entry.seq);
+        }
+        // The checklist has to come from here too, or it freezes on whichever
+        // step was live when the stream died and stays there all render.
+        if (Array.isArray(data.steps)) {
+          setSteps((prev) => {
+            const next = { ...prev };
+            for (const st of data.steps) next[st.key] = st.status;
+            return next;
+          });
+        }
+
+        if (data.finished) {
+          if (data.status === "done") {
+            setSteps((prev) => {
+              const next = { ...prev };
+              for (const k of Object.keys(next)) if (next[k] === "active") next[k] = "done";
+              return next;
+            });
+            setResult({ drop: data.drop ?? null, assets: assetsRef.current });
+            enterPhase("done");
+          } else {
+            setRunError(data.error ?? `jobben endte som ${data.status}`);
+            enterPhase("error");
+          }
+          return;
+        }
+      } catch {
+        /* the job outlives a flaky connection — try again on the next tick */
+      }
+    }
+    setRunError("Fikk ikke kontakt med jobben. Se GitHub Actions for status.");
+    enterPhase("error");
+  }
 
   function handleEvent(block: string) {
     let event = "message";
@@ -211,27 +330,31 @@ export default function PickerPage() {
     } catch {
       return;
     }
-    if (event === "log") pushLog(payload.line ?? "");
+    if (event === "job") jobRef.current = payload.jobId ?? null;
+    else if (event === "log") pushLog(payload.line ?? "");
     else if (event === "step" && payload.key && payload.status) {
       const { key, status } = payload;
       setSteps((prev) => ({ ...prev, [key]: status }));
     } else if (event === "done") {
       setResult({ drop: payload.drop ?? null, assets: payload.assets ?? 0 });
-      setPhase("done");
+      enterPhase("done");
     } else if (event === "error") {
       setRunError(payload.message ?? "ukjent feil");
-      setPhase("error");
+      enterPhase("error");
     }
   }
 
   async function startRender(mode: "full" | "tilbud" = "full") {
     if (selected.size === 0) return;
     if (mode === "tilbud" && selectedOffers === 0) return;
-    setPhase("running");
+    enterPhase("running");
     setSteps({});
     setLogs([]);
     setResult(null);
     setRunError(null);
+    jobRef.current = null;
+    seenSeqRef.current = -1;
+    assetsRef.current = 0;
     try {
       const res = await fetch("/api/select", {
         method: "POST",
@@ -260,9 +383,20 @@ export default function PickerPage() {
           handleEvent(b);
         }
       }
+
+      // The stream ended without saying how it went — the usual case on any
+      // render long enough to outlive the function. The runner does not care
+      // that this connection died, so ask how the job is getting on instead of
+      // leaving a spinner turning over work that may already be finished.
+      if (phaseRef.current === "running") await followJob();
     } catch (err) {
+      if (phaseRef.current === "running" && jobRef.current) {
+        pushLog("[dashboard] mistet forbindelsen — følger jobben videre…");
+        await followJob();
+        return;
+      }
       setRunError(String((err as Error).message));
-      setPhase("error");
+      enterPhase("error");
     }
   }
 
@@ -482,7 +616,28 @@ export default function PickerPage() {
           <span className="text-sm text-mute">·</span>
           <span className="text-sm font-semibold text-ink">{selected.size} valgt</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Why the offer button is dead, said out loud.
+              It is disabled unless a SELECTED product carries a førpris, and in
+              the normal windows almost nothing does — 0 of 255 in the 30-day
+              view on the day this was written. So from this screen the button
+              is permanently grey, and the only explanation was a title
+              attribute, which browsers do not reliably show on a disabled
+              control. From the operator's side the button was simply broken.
+              Now it says what is missing and where the offers actually live. */}
+          {selected.size > 0 && selectedOffers === 0 && (
+            <span className="text-xs text-mute">
+              Ingen av de valgte varene har førpris —{" "}
+              <button
+                type="button"
+                onClick={() => { setStockedOnly(false); setOffersOnly(true); }}
+                className="font-semibold text-red-700 underline underline-offset-2"
+              >
+                bytt til Tilbud
+              </button>{" "}
+              for å lage en tilbudsannonse.
+            </span>
+          )}
           <button onClick={clearSelection} disabled={selected.size === 0} className="rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40">
             Nullstill
           </button>
@@ -543,6 +698,16 @@ export default function PickerPage() {
             </div>
           )}
         </section>
+      )}
+
+      {/* A background refetch is running. Shown ABOVE the grid, never instead of
+          it: the list on screen is still perfectly usable while Shopify is
+          re-read, and replacing it with a status message is what made pressing
+          ↻ feel like it had wiped the page. */}
+      {refreshNote && (
+        <p className="mb-4 rounded-xl border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+          ↻ {refreshNote}
+        </p>
       )}
 
       {/* product grid */}

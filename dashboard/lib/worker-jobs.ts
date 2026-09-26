@@ -13,7 +13,7 @@
  *
  * Server-only.
  */
-import { eq, gt, sbInsert, sbSelect, sbSelectOne, sbUpdate } from "./supabase";
+import { eq, gt, inList, sbInsert, sbSelect, sbSelectOne, sbUpdate } from "./supabase";
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
@@ -57,6 +57,36 @@ export async function getJob(id: string): Promise<WorkerJob | null> {
 
 export async function listJobs(limit = 20): Promise<WorkerJob[]> {
   return sbSelect<WorkerJob>("worker_jobs", { order: "created_at.desc", limit });
+}
+
+/**
+ * A refresh of this command that is already on its way, if there is one.
+ *
+ * The workflow runs under a single `worker-render` concurrency group, and
+ * GitHub only holds ONE pending run per group: queue a second and the first is
+ * cancelled outright. Nothing tells the database that happened, so every extra
+ * click left a row stuck at "queued" for good and bought the operator nothing.
+ * Two of them were sitting in the table from a single impatient afternoon.
+ *
+ * So a click that lands while a sync is already queued or running joins that
+ * job instead of starting a rival to it.
+ *
+ * `staleMs` bounds the claim: a job that has sat unqueued for longer than a run
+ * could plausibly take is treated as gone rather than trusted forever, or one
+ * lost dispatch would block refreshing until someone edited the table by hand.
+ */
+export async function activeJobFor(
+  command: string,
+  staleMs = 20 * 60_000,
+): Promise<WorkerJob | null> {
+  const rows = await sbSelect<WorkerJob>("worker_jobs", {
+    command: eq(command),
+    status: inList(["queued", "running"]),
+    order: "created_at.desc",
+    limit: 5,
+  });
+  const cutoff = Date.now() - staleMs;
+  return rows.find((j) => new Date(j.created_at).getTime() >= cutoff) ?? null;
 }
 
 export async function attachRun(id: string, runId: number): Promise<void> {

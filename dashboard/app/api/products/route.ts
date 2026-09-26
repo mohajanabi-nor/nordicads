@@ -15,7 +15,8 @@ import { NextRequest } from "next/server";
 import { sbSelect } from "@/lib/supabase";
 import { getAppState } from "@/lib/app-state";
 import { dispatchRender, usesGitHubActions } from "@/lib/github-actions";
-import { createJob, newJobId } from "@/lib/worker-jobs";
+import { activeJobFor, createJob, newJobId } from "@/lib/worker-jobs";
+import { ms, orderByArrival, windowStart } from "@/lib/picker-order";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -145,10 +146,6 @@ async function loadWindow(sinceDays: number): Promise<Loaded> {
   return p;
 }
 
-function ms(t: string | null): number {
-  return t ? new Date(t).getTime() : 0;
-}
-
 /**
  * "Fresh" for the picker window = genuinely new OR genuinely restocked — NOT
  * merely last-edited. `updated_at` bumps whenever anything on the product
@@ -167,28 +164,6 @@ function isFresh(p: PickerProduct, cutoff: number, minRestock: number): boolean 
     p.restock_increase >= minRestock &&
     ms(p.inventory_updated_at) >= cutoff;
   return isNew || restocked;
-}
-
-/**
- * Order a windowed list the way the operator reads the cards: NEW ARRIVALS
- * first (newest created_at on top), then RESTOCKS (most recent restock on top).
- *
- * We deliberately do NOT rank by a single "max(created, inventory_updated)"
- * timestamp: this store's whole catalogue often gets its inventory touched on
- * the same day (a bulk sync), so inventory_updated_at is "today" for nearly
- * every product and collapses to a useless tie — which just leaves the raw
- * Shopify order (looks scrambled). Grouping by signal keeps each card's visible
- * date monotonic within its group, so the order reads as sorted.
- */
-function freshCompare(a: PickerProduct, b: PickerProduct, cutoff: number): number {
-  const aNew = ms(a.created_at) >= cutoff;
-  const bNew = ms(b.created_at) >= cutoff;
-  if (aNew !== bNew) return aNew ? -1 : 1; // new arrivals before restocks
-  // Within a group, newest relevant event first: created_at for new arrivals,
-  // inventory_updated_at (the restock moment) for restocks.
-  const at = aNew ? ms(a.created_at) : ms(a.inventory_updated_at);
-  const bt = bNew ? ms(b.created_at) : ms(b.inventory_updated_at);
-  return bt - at;
 }
 
 // Collections that sit on (nearly) every product and carry no category meaning —
@@ -246,12 +221,6 @@ function categoryOf(p: PickerProduct, freq: Map<string, number>, total: number):
  * (days-1 whole days before today's midnight). Without this, a product added
  * late yesterday would wrongly show under "I dag".
  */
-function windowCutoff(days: number): number {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  return start.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
-}
-
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const since = sp.get("since") ? parseInt(sp.get("since")!, 10) : 0;
@@ -290,9 +259,16 @@ export async function GET(req: NextRequest) {
     // Hosted, a refresh cannot happen inside this request — it dispatches a
     // fetch and says so, rather than appearing to refresh and changing nothing.
     if (forceRefresh && usesGitHubActions()) {
-      const jobId = newJobId();
-      await createJob(jobId, "products", { trigger: "picker-refresh" });
-      await dispatchRender(jobId, { command: "products" });
+      // Join a sync that is already on its way rather than dispatching a rival
+      // to it — a second one would cancel the first at GitHub and leave its row
+      // queued for ever, which is what made repeated clicking look like nothing
+      // was happening at all.
+      const running = await activeJobFor("products");
+      const jobId = running?.id ?? newJobId();
+      if (!running) {
+        await createJob(jobId, "products", { trigger: "picker-refresh" });
+        await dispatchRender(jobId, { command: "products" });
+      }
       const { products, storeDomain } = await loadFromDatabase();
       return Response.json({
         store_domain: storeDomain,
@@ -300,7 +276,9 @@ export async function GET(req: NextRequest) {
         cached: true,
         refreshing: true,
         jobId,
-        note: "Henter produkter på nytt i bakgrunnen — last siden om et minutt.",
+        note: running
+          ? "Henter allerede produkter i bakgrunnen — last siden om et minutt."
+          : "Henter produkter på nytt i bakgrunnen — last siden om et minutt.",
         products: [],
       });
     }
@@ -315,7 +293,7 @@ export async function GET(req: NextRequest) {
       // Stock touched inside the window, newest change first. A delivery lands
       // as one batch of near-identical timestamps, so it arrives as one block;
       // vendor/title break the ties inside that block.
-      const cutoff = windowCutoff(since);
+      const cutoff = windowStart(since);
       out = out.filter((p) => ms(p.inventory_updated_at) >= cutoff);
       out = [...out].sort(
         (a, b) =>
@@ -324,42 +302,16 @@ export async function GET(req: NextRequest) {
           a.title.localeCompare(b.title),
       );
     } else if (since && since > 0) {
-      const cutoff = windowCutoff(since);
+      const cutoff = windowStart(since);
       out = out.filter((p) => isFresh(p, cutoff, minRestock));
 
-      // CLUSTER like-with-like: the operator reads the grid by product family
-      // (all drinks together, all chocolates together), so category is the
-      // PRIMARY order key — not date. Categories themselves are ordered by their
-      // freshest arrival so the newest stuff still surfaces near the top; within
-      // a category we keep new-before-restock + newest-first, then group by brand
-      // so e.g. all Najjar coffees sit next to each other. Sorting happens BEFORE
-      // the limit slice so the kept N are the freshest whole categories.
+      // Newest delivery day on top, clustered by category within the day.
+      // It previously sorted by category FIRST and date only inside one, which
+      // buried a truck that landed this morning under a category whose newest
+      // item was a week old — the complaint that started this.
       const freq = collectionFreq(products); // over the full superset — stable
       const total = products.length;
-      const cat = new Map<string, string>(); // product id -> cluster category
-      const catCreated = new Map<string, number>(); // category -> freshest created_at
-      const catInv = new Map<string, number>(); // category -> freshest restock
-      for (const p of out) {
-        const c = categoryOf(p, freq, total);
-        cat.set(p.id, c);
-        catCreated.set(c, Math.max(catCreated.get(c) ?? 0, ms(p.created_at)));
-        catInv.set(c, Math.max(catInv.get(c) ?? 0, ms(p.inventory_updated_at)));
-      }
-      out = [...out].sort((a, b) => {
-        const ca = cat.get(a.id)!, cb = cat.get(b.id)!;
-        if (ca !== cb) {
-          // Category order: freshest genuine arrival first, then freshest
-          // restock, then name — so a category with a brand-new product leads.
-          return (
-            (catCreated.get(cb)! - catCreated.get(ca)!) ||
-            (catInv.get(cb)! - catInv.get(ca)!) ||
-            ca.localeCompare(cb)
-          );
-        }
-        const f = freshCompare(a, b, cutoff);
-        if (f !== 0) return f;
-        return (a.vendor || "").localeCompare(b.vendor || "") || a.title.localeCompare(b.title);
-      });
+      out = orderByArrival(out, cutoff, minRestock, (p) => categoryOf(p, freq, total));
     }
     if (query) {
       out = out.filter((p) => `${p.title} ${p.vendor}`.toLowerCase().includes(query));

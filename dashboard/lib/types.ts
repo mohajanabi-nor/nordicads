@@ -37,6 +37,9 @@ export interface RunEvent {
   drop?: string | null;
   assets?: number;
   message?: string;
+  /** event: "job" — the worker job this run is being done by, kept by the
+   *  browser so a dropped stream can be picked back up. */
+  jobId?: string;
   // ---- campaign send (event: "progress" / "done") ----
   campaignId?: string;
   sent?: number;

@@ -54,9 +54,16 @@ export function createLineHandler(send: Send, steps: Step[]) {
 
   const advanceTo = (idx: number) => {
     if (idx <= stepIdx) return;
-    for (let i = stepIdx + 1; i <= idx; i++) {
-      send("step", { key: steps[i].key, label: steps[i].label, status: i < idx ? "done" : "active" });
+    // Everything before the new step is finished — INCLUDING the one we were
+    // just on. It used to emit only the steps it passed THROUGH, so the step
+    // being left behind never received its "done" and sat spinning: a real run
+    // ended up showing five active spinners at once and ticking only the last.
+    // (stepsFromLines, which the reconnect uses, always got this right; the
+    // live stream is what disagreed.)
+    for (let i = Math.max(stepIdx, 0); i < idx; i++) {
+      send("step", { key: steps[i].key, label: steps[i].label, status: "done" });
     }
+    send("step", { key: steps[idx].key, label: steps[idx].label, status: "active" });
     stepIdx = idx;
   };
 

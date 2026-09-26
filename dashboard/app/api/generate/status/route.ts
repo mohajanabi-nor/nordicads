@@ -13,7 +13,7 @@
  * which looks far more like a stuck job than a lost connection does.
  */
 import { getJob, isTerminal, readLogs } from "@/lib/worker-jobs";
-import { GENERATE_STEPS, stepsFromLines } from "@/lib/pipeline-steps";
+import { GENERATE_STEPS, SELECT_STEPS, stepsFromLines } from "@/lib/pipeline-steps";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +25,11 @@ export async function GET(req: Request) {
   if (!job) return Response.json({ error: "ukjent jobb" }, { status: 404 });
 
   const since = Number.parseInt(new URL(req.url).searchParams.get("since") ?? "-1", 10);
+  // The picker's manual flow has its own checklist — no baseline is committed,
+  // so reporting the generate steps would leave it waiting on one that never
+  // arrives.
+  const steps =
+    new URL(req.url).searchParams.get("flow") === "select" ? SELECT_STEPS : GENERATE_STEPS;
 
   // The whole log, every time: a step is decided by a line that may have been
   // read long before this poller attached, so `since` can only narrow what is
@@ -40,6 +45,6 @@ export async function GET(req: Request) {
     drop: job.drop_dir,
     error: job.error_message,
     logs: all.filter((entry) => entry.seq > cutoff),
-    steps: stepsFromLines(GENERATE_STEPS, all.map((entry) => entry.line)),
+    steps: stepsFromLines(steps, all.map((entry) => entry.line)),
   });
 }
