@@ -25,7 +25,12 @@ on:
         required: true
         default: generate
         type: choice
-        options: [generate, preview, status, customers, products]
+        # `select` is the picker's manual flow. Leaving it out of this list did
+        # not fail quietly: GitHub rejects the dispatch outright with
+        # "Provided value 'select' for input 'command' not in the list of
+        # allowed values", so every "Lag annonser + katalog" click died before
+        # a runner was ever assigned.
+        options: [generate, select, preview, status, customers, products]
       mock:
         description: "Use offline mock data (commits nothing)"
         default: false
