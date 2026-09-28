@@ -57,6 +57,19 @@ SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 # take everything after the arrow rather than a non-space run.
 DROP_LINE = re.compile(r"->\s*(.+?)\s*$")
 
+# Ceiling on a single argument. Generous on purpose: the picker's --ids list is
+# one argument holding every selected product, about 36 characters each, so a
+# 500-product selection is ~18 kB. The old limit was 2000, which a selection of
+# 56 products already exceeded — and the argument was then DROPPED while its
+# flag stayed, so the worker was handed `select --ids` with nothing after it.
+#
+# 32 kB rather than something larger: these arrive in an environment variable,
+# and Windows caps one at 32767 characters, so a bigger ceiling could not be
+# honoured on a developer machine even though the Linux runner would allow it.
+# It still leaves room for roughly 880 products, well past the 500 the picker
+# will ever load.
+MAX_ARG_LEN = 32_000
+
 # The `customers` command prints its result as one sentinel-prefixed JSON line.
 CUSTOMERS_SENTINEL = "CUSTOMERS_JSON "
 # The `products` command prints its result the same way.
@@ -251,9 +264,17 @@ def extra_args() -> list[str]:
     out: list[str] = []
     for item in parsed[:64]:
         text = str(item)
-        if len(text) > 2000 or any(ord(ch) < 32 for ch in text):
-            print(f"[ci] refusing suspicious argument: {text[:60]!r}", file=sys.stderr)
-            continue
+        # A refused argument aborts the run. Skipping it used to look tidier,
+        # but argv is positional: dropping the value of `--ids` leaves the flag
+        # behind it, and the worker dies on a malformed command line far from
+        # the real cause. Refusing loudly names the cause.
+        if len(text) > MAX_ARG_LEN:
+            raise ValueError(
+                f"argument {len(text)} tegn er for langt (maks {MAX_ARG_LEN}) — "
+                "velg færre produkter"
+            )
+        if any(ord(ch) < 32 for ch in text):
+            raise ValueError(f"argument inneholder kontrolltegn: {text[:60]!r}")
         out.append(text)
     return out
 
@@ -270,10 +291,29 @@ def main() -> int:
         print("[ci] no worker command given", file=sys.stderr)
         return 2
 
-    argv = argv + extra_args()
-
     job_id = ns.job_id
+
+    # Validate before running, but claim the job either way: a job row that
+    # stays "queued" for ever is the one failure mode the dashboard cannot
+    # explain to anybody.
+    arg_error: str | None = None
+    try:
+        argv = argv + extra_args()
+    except ValueError as exc:
+        arg_error = str(exc)
+
     claim_job(job_id, argv[0], argv)
+
+    if arg_error:
+        message = f"ugyldige argumenter: {arg_error}"
+        # Into the job log as well as stderr — the dashboard streams the log,
+        # and this used to be invisible there, leaving only the worker's usage
+        # message with nothing to say why.
+        push_lines(job_id, 0, [f"[ci] {message}"])
+        set_status(job_id, status="failed", exit_code=2, ended_at="now()",
+                   error_message=message)
+        print(f"[ci] {message}", file=sys.stderr)
+        return 2
 
     env = {
         **os.environ,
