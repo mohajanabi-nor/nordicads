@@ -1,0 +1,662 @@
+{%- comment -%}
+  Wishlist ("Ønskeliste") — hearts on product cards and the product page, an icon
+  with a counter in the header, and the list itself on /pages/onskeliste.
+
+  Rendered once from layout/theme.liquid, just above </body>:
+    {% render 'onskeliste', product: product %}
+
+  Everything is found on the page by JavaScript, so the five templates that
+  each draw their own product card (.product-grid-item) are left untouched,
+  and the page uses the theme's normal page template.
+
+  A guest's list lives in the browser (localStorage). A logged-in customer's list is
+  kept on the dashboard, through the App Proxy at /apps/onskeliste, so it follows them
+  across devices and can drive the price-drop / back-in-stock emails they opt in to.
+{%- endcomment -%}
+
+<style>
+  /* Each card is its own layer, so the heart can never rise above the sticky header. */
+  .product-grid-item { isolation: isolate; }
+
+  .ne-wl-heart {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255, 255, 255, .9); box-shadow: 0 1px 4px rgba(0, 0, 0, .15);
+    color: #222; cursor: pointer; transition: transform .15s ease;
+  }
+  .ne-wl-heart:hover { transform: scale(1.08); }
+  .ne-wl-heart svg { width: 18px; height: 18px; }
+  .ne-wl-heart .ne-wl-fill { fill: transparent; transition: fill .15s ease; }
+  .ne-wl-heart[aria-pressed="true"] { color: {{ settings.color_primary | default: '#ffa40b' }}; }
+  .ne-wl-heart[aria-pressed="true"] .ne-wl-fill { fill: currentColor; }
+
+  /* On the product page: a full-width button under Add to Cart, outlined in the store's
+     orange, filled once the product is saved. Width and corners are copied from the
+     Add to Cart button by the script. */
+  .ne-wl-heart--inline {
+    position: static; display: flex; gap: 10px; width: 100%; height: 52px; margin: 12px 0 0;
+    padding: 0 16px; border: 2px solid {{ settings.color_primary | default: '#ffa40b' }}; border-radius: 4px;
+    background: #fff; box-shadow: none; color: {{ settings.color_primary | default: '#ffa40b' }};
+    font: inherit; font-size: 16px; font-weight: 500; transition: background .15s ease, color .15s ease;
+  }
+  .ne-wl-heart--inline svg { width: 20px; height: 20px; }
+  .ne-wl-heart--inline:hover,
+  .ne-wl-heart--inline[aria-pressed="true"] {
+    transform: none; background: {{ settings.color_primary | default: '#ffa40b' }}; color: #fff;
+  }
+  .ne-wl-heart--inline[aria-pressed="true"]:hover { opacity: .9; }
+
+  .ne-wl-header {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    margin-right: 18px; color: inherit; vertical-align: middle;
+  }
+  .ne-wl-header svg { width: 30px; height: 30px; }
+  .ne-wl-header .ne-wl-fill { fill: transparent; }
+  .ne-wl-count {
+    position: absolute; top: -6px; right: -10px; min-width: 20px; height: 20px; padding: 0 5px;
+    border-radius: 10px; background: {{ settings.color_primary | default: '#ffa40b' }}; color: #fff;
+    font-size: 12px; line-height: 20px; text-align: center; font-weight: 600;
+  }
+  .ne-wl-count[hidden] { display: none; }
+  .ne-wl-floating {
+    position: fixed; left: 16px; bottom: 16px; z-index: 900; width: 52px; height: 52px; margin: 0;
+    border-radius: 50%; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, .2);
+  }
+  .ne-wl-floating svg { width: 24px; height: 24px; }
+
+  .ne-wl-toast {
+    position: fixed; left: 50%; bottom: 24px; z-index: 1040; transform: translate(-50%, 20px);
+    max-width: calc(100% - 32px); padding: 12px 18px; border-radius: 6px;
+    background: #222; color: #fff; font-size: 14px; opacity: 0; pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease;
+  }
+  .ne-wl-toast.is-visible { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  .ne-wl-toast a { color: #fff; text-decoration: underline; margin-left: 8px; }
+
+  .ne-wl-title { margin: 32px 0 8px; }
+  .ne-wl-page-grid {
+    display: grid; gap: 32px 24px; margin: 24px 0 64px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  @media (max-width: 991px) { .ne-wl-page-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 767px) { .ne-wl-page-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 16px; } }
+  .ne-wl-item { position: relative; display: flex; flex-direction: column; gap: 6px; }
+  .ne-wl-item-image { display: flex; align-items: center; justify-content: center; aspect-ratio: 1; margin-bottom: 8px; }
+  .ne-wl-item-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .ne-wl-item-title { color: inherit; font-weight: 500; line-height: 1.4; }
+  .ne-wl-item-title:hover { color: inherit; text-decoration: underline; }
+  .ne-wl-stock { font-size: 14px; }
+  .ne-wl-stock.is-in { color: #1a7f37; }
+  .ne-wl-stock.is-out { color: #b00020; }
+  .ne-wl-item-price { font-size: 22px; font-weight: 700; line-height: 1.3; }
+  .ne-wl-item-price s { font-size: 15px; font-weight: 400; opacity: .6; margin-left: 6px; }
+  .ne-wl-item-piece { font-size: 22px; font-weight: 400; margin-bottom: 12px; }
+  .ne-wl-qty {
+    display: flex; align-items: center; justify-content: space-between; margin-top: auto;
+    height: 52px; padding: 0 8px; border: 2px solid {{ settings.color_primary | default: '#ffa40b' }};
+    border-radius: 26px; background: #fff;
+  }
+  .ne-wl-qty button {
+    width: 40px; height: 40px; padding: 0; border: 0; background: none; color: #222;
+    font-size: 22px; font-weight: 600; line-height: 1; cursor: pointer;
+  }
+  .ne-wl-qty button:disabled { opacity: .35; cursor: default; }
+  .ne-wl-qty output { min-width: 32px; text-align: center; font-size: 18px; font-weight: 600; }
+  .ne-wl-qty button.is-loading { opacity: .35; cursor: progress; }
+  .ne-wl-qty.is-soldout { justify-content: center; border-color: #ccc; color: #888; font-weight: 600; }
+  .ne-wl-item .ne-wl-heart { top: 0; right: 0; }
+  .ne-wl-empty { margin: 16px 0; }
+
+  .ne-wl-alerts {
+    margin: 16px 0 8px; padding: 16px 18px; border: 1px solid #eee; border-radius: 6px; background: #fafafa;
+  }
+  .ne-wl-alerts[hidden] { display: none; }
+  .ne-wl-alerts.is-busy { opacity: .7; }
+  .ne-wl-alerts input { accent-color: {{ settings.color_primary | default: '#ffa40b' }}; width: 18px; height: 18px; margin: 0; }
+  .ne-wl-optin { display: flex; align-items: flex-start; gap: 10px; margin: 0; font-weight: 500; cursor: pointer; }
+  .ne-wl-optin input { flex: none; margin-top: 2px; }
+  .ne-wl-note { margin: 10px 0 0 28px; font-size: 13px; color: #666; }
+</style>
+
+<script>
+(function () {
+  if (window.__neWishlist) return;
+  window.__neWishlist = true;
+
+  var KEY = 'ne_onskeliste_v1';
+  // Whose list the browser is holding: '' for a guest, else the customer id. Only used
+  // to decide what to do with the local copy; the server trusts Shopify's signed id.
+  var OWNER_KEY = 'ne_onskeliste_owner';
+  var PAGE_URL = '/pages/onskeliste';
+  // Shopify's App Proxy forwards this to the dashboard (/api/storefront/wishlist).
+  var API = '/apps/onskeliste/';
+  var CUSTOMER_ID = {% if customer %}{{ customer.id | json }}{% else %}null{% endif %};
+  var LOGGED_IN = !!CUSTOMER_ID;
+  var PRODUCT_HANDLE = {{ product.handle | json }};
+  var MONEY_FORMAT = {{ shop.money_format | strip_html | json }};
+
+  // All shopper-facing text. "In stock" stays in English because the store's own cards say it that way.
+  var T = {
+    title: 'Ønskeliste',
+    add: 'Legg til i ønskelisten',
+    saved: 'Lagret i ønskelisten',
+    remove: 'Fjern fra ønskelisten',
+    added: 'Lagt til i ønskelisten',
+    removed: 'Fjernet fra ønskelisten',
+    view: 'Se ønskelisten',
+    empty: 'Ønskelisten din er tom. Trykk på hjertet på et produkt for å lagre det her.',
+    inStock: 'In stock',
+    perBox: 'Kasse',
+    perPiece: 'Stk',
+    loginForPrice: 'Logg inn for å se priser',
+    soldOut: 'Utsolgt',
+    less: 'Færre',
+    more: 'Flere',
+    inCart: 'Antall i handlekurven',
+    cartFailed: 'Kunne ikke oppdatere handlekurven',
+    syncFailed: 'Kunne ikke lagre ønskelisten. Prøv igjen.',
+    alertsLabel: 'Varsle meg på e-post når en vare i ønskelisten får lavere pris eller er tilbake på lager',
+    alertsNote: 'Du kan slå av varslene her når som helst, eller med lenken i e-posten.',
+    alertsOn: 'Varsler er slått på',
+    alertsOff: 'Varsler er slått av',
+    alertsFailed: 'Kunne ikke lagre innstillingen. Prøv igjen.'
+  };
+
+  var HEART = '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="ne-wl-fill" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 20.5s-7.5-4.6-9.3-9.2C1.4 8 3.4 4.5 6.9 4.5c2 0 3.6 1.1 5.1 3 1.5-1.9 3.1-3 5.1-3 3.5 0 5.5 3.5 4.2 6.8-1.8 4.6-9.3 9.2-9.3 9.2z"/></svg>';
+
+  // ---- storage ----
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; }
+  }
+  function save(items) {
+    try { localStorage.setItem(KEY, JSON.stringify(items)); } catch (e) {}
+    refresh();
+  }
+  function has(handle) {
+    return load().some(function (i) { return i.handle === handle; });
+  }
+  function toggle(handle, variantId) {
+    var items = load();
+    var saved = items.some(function (i) { return i.handle === handle; });
+    if (saved) {
+      items = items.filter(function (i) { return i.handle !== handle; });
+    } else {
+      items.unshift({ handle: handle, variantId: variantId || null, addedAt: new Date().toISOString() });
+    }
+    save(items);
+    toast(saved ? T.removed : T.added, !saved);
+    if (LOGGED_IN) {
+      server(saved ? 'remove' : 'add', saved ? { handle: handle } : { handle: handle, variantId: variantId || null })
+        .catch(function () {
+          toast(T.syncFailed, false);
+          // Put the list back to what the server actually has.
+          server('state').catch(function () {});
+        });
+    }
+  }
+
+  // ---- the account copy (logged-in customers) ----
+  var alerts = null; // { optIn } once the server has answered
+  var queue = Promise.resolve();
+
+  function api(action, body) {
+    var init = body === undefined
+      ? { headers: { Accept: 'application/json' }, credentials: 'same-origin' }
+      : {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(body)
+        };
+    return fetch(API + action, init).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (!r.ok) throw new Error(b.error || 'HTTP ' + r.status);
+        return b;
+      });
+    });
+  }
+
+  // Calls run one at a time, in the order they were made, and each answer (the full
+  // list) replaces the local copy — so quick taps can't leave the two out of step.
+  function server(action, body) {
+    var run = queue.then(function () { return api(action, body); }).then(applyState);
+    queue = run.catch(function () {});
+    return run;
+  }
+
+  function applyState(state) {
+    if (!state || !state.items) return state;
+    var items = state.items.map(function (i) {
+      return { handle: i.handle, variantId: i.variantId || null, addedAt: i.addedAt };
+    });
+    try { localStorage.setItem(KEY, JSON.stringify(items)); } catch (e) {}
+    if (state.alerts) alerts = state.alerts;
+    refresh();
+    renderAlerts();
+    return state;
+  }
+
+  function owner() { try { return localStorage.getItem(OWNER_KEY) || ''; } catch (e) { return ''; } }
+  function setOwner(v) { try { localStorage.setItem(OWNER_KEY, v); } catch (e) {} }
+  function clearLocal() { try { localStorage.removeItem(KEY); } catch (e) {} }
+
+  // On every page load. Resolves true when the local copy now matches the account.
+  function syncOnStart() {
+    if (!LOGGED_IN) {
+      // A customer logged out on this device: their list mustn't stay behind for the next person.
+      if (owner()) { clearLocal(); setOwner(''); refresh(); }
+      return Promise.resolve(false);
+    }
+    var me = String(CUSTOMER_ID);
+    var prev = owner();
+    if (prev && prev !== me) clearLocal(); // someone else's list on a shared computer
+    var local = load();
+    // A guest list is moved into the account once, on the first load after logging in.
+    var first = prev !== me && local.length;
+    return server(first ? 'merge' : 'state', first ? { items: local } : undefined)
+      .then(function () { setOwner(me); return true; })
+      .catch(function () { return false; }); // keep the local copy; the next page load retries
+  }
+
+  function handleFrom(href) {
+    var m = /\/products\/([^\/?#]+)/.exec(href || '');
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  function visible(el) {
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+  }
+
+  // ---- hearts on product cards ----
+  function makeHeart(handle, inline) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ne-wl-heart' + (inline ? ' ne-wl-heart--inline' : '');
+    b.setAttribute('data-ne-wl-handle', handle);
+    b.innerHTML = HEART + (inline ? '<span class="ne-wl-label"></span>' : '');
+    b.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var variant = null;
+      if (inline) {
+        var form = b.closest('form') || document.querySelector('form[action*="/cart/add"]');
+        var input = form && form.querySelector('[name="id"]');
+        variant = input ? input.value : null;
+      }
+      toggle(handle, variant);
+    });
+    return b;
+  }
+
+  function scanCards() {
+    document.querySelectorAll('.product-grid-item:not([data-ne-wl])').forEach(function (card) {
+      var link = card.querySelector('a[href*="/products/"]');
+      var handle = link && handleFrom(link.getAttribute('href'));
+      if (!handle) return;
+      card.setAttribute('data-ne-wl', '');
+      // Pinned to the card's top-right corner (inside its padding), so every heart
+      // sits at the same height whatever the size of the product photo.
+      var cs = getComputedStyle(card);
+      if (cs.position === 'static') card.style.position = 'relative';
+      var heart = makeHeart(handle, false);
+      heart.style.right = (parseFloat(cs.paddingRight) || 0) + 8 + 'px';
+      heart.style.top = (parseFloat(cs.paddingTop) || 0) + 8 + 'px';
+      card.appendChild(heart);
+    });
+  }
+
+  // ---- heart on the product page ----
+  function scanProductPage() {
+    if (!PRODUCT_HANDLE || document.querySelector('.ne-wl-heart--inline')) return;
+    var forms = Array.prototype.filter.call(
+      document.querySelectorAll('form[action*="/cart/add"]'),
+      function (f) { return visible(f) && !f.closest('.modal, .mini-cart, [class*="quickview"], [class*="quick-view"]'); }
+    );
+    var form = forms[0];
+    if (!form) return;
+    var submit = form.querySelector('[type="submit"], [name="add"]');
+    var heart = makeHeart(PRODUCT_HANDLE, true);
+    if (!submit) { form.appendChild(heart); return; }
+    // Below the row that holds Add to Cart (not beside it), as wide as the button and
+    // with the same corners, so the two read as a pair.
+    var row = submit.parentElement;
+    if (row && row !== form && row.parentElement) row.parentElement.insertBefore(heart, row.nextSibling);
+    else submit.parentElement.insertBefore(heart, submit.nextSibling);
+    var r = submit.getBoundingClientRect();
+    if (r.width) heart.style.maxWidth = Math.round(r.width) + 'px';
+    heart.style.borderRadius = getComputedStyle(submit).borderRadius;
+  }
+
+  // ---- header icon ----
+  function findCartIcon(area) {
+    // The visible cart link/button in this header, never one inside the mini-cart drawer.
+    var candidates = area.querySelectorAll('a[href$="/cart"], a[href*="/cart?"], [class*="cart"]');
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      if (c.closest('.mini-cart, .ne-wl-header') || !visible(c)) continue;
+      if (c.matches('a, button') || c.querySelector('svg, img, i')) return c.closest('a, button') || c;
+    }
+    return null;
+  }
+
+  function scanHeader() {
+    document.querySelectorAll('.header-main-area, header, .menu-mobile').forEach(function (area) {
+      if (area.querySelector('.ne-wl-header') || !visible(area)) return;
+      var cart = findCartIcon(area);
+      if (!cart) return;
+      var link = document.createElement('a');
+      link.href = PAGE_URL;
+      link.className = 'ne-wl-header';
+      link.setAttribute('aria-label', T.title);
+      link.innerHTML = HEART + '<span class="ne-wl-count" hidden></span>';
+      link.style.color = getComputedStyle(cart).color;
+      var icon = cart.querySelector('svg, img, i');
+      var size = icon ? Math.round(icon.getBoundingClientRect().height) : 0;
+      if (size >= 18 && size <= 48) {
+        link.querySelector('svg').style.width = link.querySelector('svg').style.height = size + 'px';
+      }
+      var item = cart.parentElement && cart.parentElement.tagName === 'LI' ? cart.parentElement : cart;
+      if (item.tagName === 'LI') {
+        var li = document.createElement('li');
+        li.className = item.className;
+        li.appendChild(link);
+        item.parentElement.insertBefore(li, item);
+      } else {
+        item.parentElement.insertBefore(link, item);
+      }
+    });
+
+    // No visible header icon (e.g. a layout we could not recognise): a floating
+    // button keeps the list reachable. It goes away once a header icon exists.
+    var inHeader = Array.prototype.some.call(
+      document.querySelectorAll('.ne-wl-header:not(.ne-wl-floating)'), visible
+    );
+    var floating = document.querySelector('.ne-wl-floating');
+    if (inHeader && floating) floating.remove();
+    if (!inHeader && !floating) {
+      var f = document.createElement('a');
+      f.href = PAGE_URL;
+      f.className = 'ne-wl-header ne-wl-floating';
+      f.setAttribute('aria-label', T.title);
+      f.innerHTML = HEART + '<span class="ne-wl-count" hidden></span>';
+      document.body.appendChild(f);
+    }
+  }
+
+  // ---- state → UI ----
+  function refresh() {
+    var items = load();
+    document.querySelectorAll('[data-ne-wl-handle]').forEach(function (b) {
+      var on = items.some(function (i) { return i.handle === b.getAttribute('data-ne-wl-handle'); });
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.setAttribute('aria-label', on ? T.remove : T.add);
+      var label = b.querySelector('.ne-wl-label');
+      if (label) label.textContent = on ? T.saved : T.add;
+    });
+    document.querySelectorAll('.ne-wl-count').forEach(function (c) {
+      c.textContent = items.length;
+      c.hidden = items.length === 0;
+    });
+  }
+
+  var toastEl, toastTimer;
+  function toast(text, withLink) {
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.className = 'ne-wl-toast';
+      toastEl.setAttribute('role', 'status');
+      document.body.appendChild(toastEl);
+    }
+    toastEl.innerHTML = '';
+    toastEl.appendChild(document.createTextNode(text));
+    if (withLink && location.pathname !== PAGE_URL) {
+      var a = document.createElement('a');
+      a.href = PAGE_URL;
+      a.textContent = T.view;
+      toastEl.appendChild(a);
+    }
+    toastEl.classList.add('is-visible');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('is-visible'); }, 2600);
+  }
+
+  // ---- the wishlist page ----
+  // Formats prices exactly like the rest of the store, from the shop's money format.
+  function money(cents) {
+    var fmt = MONEY_FORMAT || '';
+    function group(n, decimals, thousands, point) {
+      var parts = (n / 100).toFixed(decimals).split('.');
+      parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, thousands);
+      return parts.join(point);
+    }
+    var m = /\{\{\s*(\w+)\s*\}\}/.exec(fmt);
+    if (!m) return group(cents, 2, ',', '.') + ' kr';
+    var value;
+    switch (m[1]) {
+      case 'amount_no_decimals': value = group(cents, 0, ',', '.'); break;
+      case 'amount_with_comma_separator': value = group(cents, 2, '.', ','); break;
+      case 'amount_no_decimals_with_comma_separator': value = group(cents, 0, '.', ','); break;
+      case 'amount_with_space_separator': value = group(cents, 2, ' ', ','); break;
+      case 'amount_with_apostrophe_separator': value = group(cents, 2, "'", '.'); break;
+      default: value = group(cents, 2, ',', '.');
+    }
+    return fmt.replace(m[0], value);
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  // ---- cart steppers (- 0 +) on the wishlist page ----
+  function fetchCart() {
+    return fetch('/cart.js', { headers: { Accept: 'application/json' } }).then(function (r) { return r.json(); });
+  }
+  function quantities(cart) {
+    var q = {};
+    (cart.items || []).forEach(function (i) { q[i.variant_id] = (q[i.variant_id] || 0) + i.quantity; });
+    return q;
+  }
+  function stepperHtml() {
+    return '<div class="ne-wl-qty">' +
+      '<button type="button" data-step="-1" aria-label="' + esc(T.less) + '">&minus;</button>' +
+      '<output aria-label="' + esc(T.inCart) + '">0</output>' +
+      '<button type="button" data-step="1" aria-label="' + esc(T.more) + '">+</button>' +
+      '</div>';
+  }
+  function bindStepper(box, variantId, start) {
+    var qty = start;
+    var out = box.querySelector('output');
+    var minus = box.querySelector('[data-step="-1"]');
+    function show() { out.textContent = qty; minus.disabled = qty <= 0; }
+    show();
+    box.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-step]');
+      if (!btn || box.classList.contains('is-busy')) return;
+      var next = qty + Number(btn.getAttribute('data-step'));
+      if (next < 0) return;
+      // Only the clicked button fades while the cart updates; is-busy blocks double clicks.
+      box.classList.add('is-busy');
+      btn.classList.add('is-loading');
+      // The first one is an add; after that the line's quantity is set directly.
+      var req = qty === 0
+        ? post('/cart/add.js', { id: variantId, quantity: 1 })
+        : post('/cart/change.js', { id: String(variantId), quantity: next });
+      req.then(function (res) {
+        return res.json().then(function (body) {
+          if (!res.ok) throw new Error(body.description || body.message || T.cartFailed);
+          return fetchCart();
+        });
+      }).then(function (c) {
+        qty = quantities(c)[variantId] || 0;
+        show();
+        cartChanged(c);
+      }).catch(function (err) {
+        toast(err && err.message ? err.message : T.cartFailed, false);
+      }).then(function () {
+        box.classList.remove('is-busy');
+        btn.classList.remove('is-loading');
+      });
+    });
+  }
+  function post(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body)
+    });
+  }
+  // Keeps the header's cart counter right without opening the mini-cart.
+  function cartChanged(cart) {
+    document.querySelectorAll('.header-main-area, header, .menu-mobile').forEach(function (area) {
+      var icon = findCartIcon(area);
+      var box = icon && (icon.parentElement || icon);
+      if (!box) return;
+      box.querySelectorAll('span, sup, small, b, div').forEach(function (n) {
+        if (!n.closest('.ne-wl-header') && !n.children.length && /^\d+$/.test(n.textContent.trim())) {
+          n.textContent = cart.item_count;
+        }
+      });
+    });
+    try { document.dispatchEvent(new CustomEvent('cart:updated', { detail: cart })); } catch (e) {}
+  }
+
+  // Built inside the theme's page width (.container), with its own heading.
+  function pageRoot() {
+    var root = document.querySelector('[data-ne-wl-page]');
+    if (root || location.pathname.replace(/\/$/, '') !== PAGE_URL) return root;
+    var main = document.querySelector('main, #MainContent, .main-content, #PageContainer') || document.body;
+    var wrap = document.createElement('div');
+    wrap.className = 'container';
+    wrap.innerHTML = '<h1 class="ne-wl-title">' + esc(T.title) + '</h1>' +
+      (LOGGED_IN ? '<div class="ne-wl-alerts" data-ne-wl-alerts hidden></div>' : '') +
+      '<div data-ne-wl-page></div>';
+    main.insertBefore(wrap, main.firstChild);
+    return wrap.querySelector('[data-ne-wl-page]');
+  }
+
+  // The email opt-in. Unticked until the customer ticks it: saving a product is not
+  // consent to be emailed about it.
+  function renderAlerts() {
+    var box = document.querySelector('[data-ne-wl-alerts]');
+    if (!box || !alerts) return;
+    box.innerHTML =
+      '<label class="ne-wl-optin"><input type="checkbox"' + (alerts.optIn ? ' checked' : '') + '> ' +
+        '<span>' + esc(T.alertsLabel) + '</span></label>' +
+      '<p class="ne-wl-note">' + esc(T.alertsNote) + '</p>';
+    box.hidden = false;
+    box.classList.remove('is-busy');
+
+    var input = box.querySelector('.ne-wl-optin input');
+    input.addEventListener('change', function () {
+      var on = input.checked;
+      box.classList.add('is-busy');
+      input.disabled = true;
+      server('alerts', { optIn: on })
+        .then(function () { toast(on ? T.alertsOn : T.alertsOff, false); })
+        .catch(function () { toast(T.alertsFailed, false); renderAlerts(); });
+    });
+  }
+
+  function renderPage() {
+    var root = pageRoot();
+    if (!root) return;
+    var items = load();
+    if (!items.length) {
+      root.innerHTML = '<p class="ne-wl-empty">' + esc(T.empty) + '</p>';
+      return;
+    }
+    root.innerHTML = '<div class="ne-wl-page-grid"></div>';
+    var grid = root.querySelector('.ne-wl-page-grid');
+
+    // The cart is read alongside the products so each stepper starts at what is already in it.
+    var cart = {};
+    var cartReady = fetchCart().then(function (c) { cart = quantities(c); }, function () {});
+    Promise.all(items.map(function (item) {
+      return fetch('/products/' + encodeURIComponent(item.handle) + '.js')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
+        .then(function (p) { return { item: item, product: p }; });
+    })).then(function (rows) { return cartReady.then(function () { return rows; }); })
+    .then(function (rows) {
+      // A product that was deleted or hidden since it was saved is dropped from the list.
+      var gone = rows.filter(function (r) { return !r.product; }).map(function (r) { return r.item.handle; });
+      if (gone.length) {
+        save(load().filter(function (i) { return gone.indexOf(i.handle) === -1; }));
+      }
+      rows.filter(function (r) { return r.product; }).forEach(function (r) {
+        var p = r.product;
+        var v = p.variants.filter(function (x) { return String(x.id) === String(r.item.variantId); })[0]
+          || p.variants.filter(function (x) { return x.available; })[0] || p.variants[0];
+        var img = (v.featured_image && v.featured_image.src) || p.featured_image || '';
+        var url = '/products/' + encodeURIComponent(p.handle);
+        var compare = v.compare_at_price && v.compare_at_price > v.price ? '<s>' + esc(money(v.compare_at_price)) + '</s>' : '';
+        var el = document.createElement('div');
+        el.className = 'ne-wl-item';
+        el.innerHTML =
+          '<a class="ne-wl-item-image" href="' + url + '">' +
+            (img ? '<img src="' + esc(img) + '" alt="' + esc(p.title) + '" loading="lazy">' : '') +
+          '</a>' +
+          '<a class="ne-wl-item-title" href="' + url + '">' + esc(p.title) +
+            (p.variants.length > 1 && v.title !== 'Default Title' ? ' – ' + esc(v.title) : '') + '</a>' +
+          '<div class="ne-wl-stock ' + (v.available ? 'is-in">&#10003; ' + esc(T.inStock) : 'is-out">' + esc(T.soldOut)) + '</div>' +
+          // Like the product cards: prices and buying are for logged-in customers only, and
+          // the per-piece ("Stk") price is whatever is typed in the product's Product type.
+          (LOGGED_IN
+            ? '<div class="ne-wl-item-price">' + esc(money(v.price)) + ' ' + esc(T.perBox) + compare + '</div>' +
+              (String(p.type || '').trim() ? '<div class="ne-wl-item-piece">' + esc(String(p.type).trim()) + ' Kr ' + esc(T.perPiece) + '</div>' : '') +
+              (v.available ? stepperHtml() : '<div class="ne-wl-qty is-soldout">' + esc(T.soldOut) + '</div>')
+            : '<a class="ne-wl-qty is-soldout" href="/account/login">' + esc(T.loginForPrice) + '</a>');
+        el.appendChild(makeHeart(p.handle, false));
+        if (LOGGED_IN && v.available) bindStepper(el.querySelector('.ne-wl-qty'), v.id, cart[v.id] || 0);
+        grid.appendChild(el);
+      });
+      refresh();
+    });
+  }
+
+  // Removing an item on the wishlist page takes its card away too.
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.ne-wl-item .ne-wl-heart');
+    if (!b) return;
+    setTimeout(function () {
+      if (has(b.getAttribute('data-ne-wl-handle'))) return;
+      b.closest('.ne-wl-item').remove();
+      if (!load().length) renderPage();
+    }, 0);
+  }, true);
+
+  // Another tab changed the list.
+  window.addEventListener('storage', function (e) { if (e.key === KEY) refresh(); });
+
+  function scan() {
+    scanCards();
+    scanProductPage();
+    scanHeader();
+    refresh();
+  }
+
+  function start() {
+    scan();
+    renderPage();
+    // Logged in: fetch the account's list, then redraw the page if it differs from
+    // what the browser had.
+    var before = JSON.stringify(load());
+    syncOnStart().then(function (synced) {
+      if (synced && JSON.stringify(load()) !== before) renderPage();
+      renderAlerts();
+    });
+    // Cards added later (filters, infinite scroll, sliders) get their heart too,
+    // and a header that only shows at another screen width gets its icon.
+    var pending;
+    function later() { clearTimeout(pending); pending = setTimeout(scan, 250); }
+    new MutationObserver(later).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', later);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>

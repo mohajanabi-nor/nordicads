@@ -19,6 +19,7 @@ const SOURCES = [
   { key: "contacts", label: "Kontakter" },
   { key: "scheduler", label: "Planlegger" },
   { key: "config", label: "Oppsett" },
+  { key: "wishlist", label: "Ønskeliste" },
 ];
 
 function fmt(iso: string): string {

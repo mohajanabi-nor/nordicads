@@ -55,6 +55,13 @@ export interface CampaignContent {
   unsubscribeMailto: string;
   /** Hidden line shown in the inbox preview next to the subject. */
   preheader?: string;
+  /** Pre-rendered rows placed under the text (the wishlist alert's product list). */
+  itemsHtml?: string;
+  itemsText?: string;
+  /** Replaces "Du får denne e-posten fordi du er kunde hos …". */
+  footerReason?: string;
+  /** Extra links before "Meld deg av". */
+  footerLinks?: Array<{ label: string; url: string }>;
 }
 
 export interface SenderIdentity {
@@ -192,6 +199,12 @@ export function renderCampaign(
     .footer    { background: ${D_FOOTER} !important; border-color: ${D_LINE} !important; color: ${D_MUTE} !important; }
     .footer strong { color: ${D_HEADING} !important; }
     .footer a  { color: ${D_MUTE} !important; }
+    /* The wishlist alert's product rows. */
+    .item-cell  { border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
+    .item-title { color: ${D_HEADING} !important; }
+    .item-mute  { color: ${D_MUTE} !important; }
+    .item-price, .item-link { color: ${D_ORANGE} !important; }
+    .item-ok    { color: #4ade80 !important; }
   }
 
   /* Outlook.com does not honour the media query. It marks what it rewrote
@@ -207,7 +220,12 @@ export function renderCampaign(
   [data-ogsc] .notice, [data-ogsb] .notice    { background: ${D_NOTICE} !important; border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
   [data-ogsc] .cta, [data-ogsb] .cta       { background: ${D_ORANGE} !important; color: ${D_ON_ORANGE} !important; }
   [data-ogsc] .footer, [data-ogsb] .footer    { background: ${D_FOOTER} !important; border-color: ${D_LINE} !important; color: ${D_MUTE} !important; }
-  [data-ogsc] .footer, [data-ogsb] .footer a  { color: ${D_MUTE} !important; }`;
+  [data-ogsc] .footer, [data-ogsb] .footer a  { color: ${D_MUTE} !important; }
+  [data-ogsc] .item-cell  { border-color: ${D_LINE} !important; color: ${D_TEXT} !important; }
+  [data-ogsc] .item-title { color: ${D_HEADING} !important; }
+  [data-ogsc] .item-mute  { color: ${D_MUTE} !important; }
+  [data-ogsc] .item-price, [data-ogsc] .item-link { color: ${D_ORANGE} !important; }
+  [data-ogsc] .item-ok    { color: #4ade80 !important; }`;
 
   const html = `<!doctype html>
 <html lang="no">
@@ -235,10 +253,13 @@ export function renderCampaign(
 ${darkRules}
 </style>
 </head>
-<body class="body" style="margin:0;padding:0;background:${CREAM};font-family:${FONT};">
+<!-- No background behind the card: the reader's own mail background shows instead.
+     The Gmail app inverts colours by itself and turned the cream page into a brown
+     frame around the card; with nothing there, there is nothing for it to turn brown. -->
+<body class="body" style="margin:0;padding:0;font-family:${FONT};">
 <!-- preheader: shown next to the subject in the inbox list, hidden in the body -->
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${esc(c.preheader ?? "")}</div>
-<table role="presentation" class="page" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${CREAM}" style="background:${CREAM};">
+<table role="presentation" class="page" cellpadding="0" cellspacing="0" border="0" width="100%">
   <tr>
     <td align="center" style="padding:24px 12px;">
       <table role="presentation" class="card" cellpadding="0" cellspacing="0" border="0" width="600"
@@ -268,6 +289,7 @@ ${darkRules}
             ${bodyHtml}
           </td>
         </tr>
+        ${c.itemsHtml ? `<tr><td style="padding:0 32px 8px;">${c.itemsHtml}</td></tr>` : ""}
 
         ${attachmentRow}
         ${ctaRow}
@@ -278,8 +300,10 @@ ${darkRules}
             Org. ${esc(who.orgNr)} · ${esc(who.address)}<br>
             ${esc(who.email)} · ${esc(who.website)}
             <br><br>
-            Du får denne e-posten fordi du er kunde hos ${esc(who.companyName)}.<br>
-            <a href="${esc(c.unsubscribeMailto)}" style="color:${MUTE};text-decoration:underline;">Meld deg av</a>
+            ${esc(c.footerReason ?? `Du får denne e-posten fordi du er kunde hos ${who.companyName}.`)}<br>
+            ${(c.footerLinks ?? [])
+              .map((l) => `<a href="${esc(l.url)}" style="color:${MUTE};text-decoration:underline;">${esc(l.label)}</a> · `)
+              .join("")}<a href="${esc(c.unsubscribeMailto)}" style="color:${MUTE};text-decoration:underline;">Meld deg av</a>
           </td>
         </tr>
 
@@ -299,6 +323,8 @@ ${darkRules}
     "",
     paras.join("\n\n"),
     "",
+    c.itemsText ?? null,
+    c.itemsText ? "" : null,
     c.attachmentName
       ? `Katalogen er vedlagt som PDF (${c.attachmentName}).`
       : null,
@@ -309,7 +335,8 @@ ${darkRules}
     `Org. ${who.orgNr} · ${who.address}`,
     `${who.email} · ${who.website}`,
     "",
-    `Du får denne e-posten fordi du er kunde hos ${who.companyName}.`,
+    c.footerReason ?? `Du får denne e-posten fordi du er kunde hos ${who.companyName}.`,
+    ...(c.footerLinks ?? []).map((l) => `${l.label}: ${l.url}`),
     `Meld deg av: ${c.unsubscribeMailto}`,
   ]
     .filter((line): line is string => line !== null)

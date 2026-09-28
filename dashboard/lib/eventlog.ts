@@ -32,7 +32,8 @@ export type LogSource =
   | "inbound"
   | "priser"
   | "worker"
-  | "auth";
+  | "auth"
+  | "wishlist";
 
 export interface LogEntry {
   at: string;

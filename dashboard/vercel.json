@@ -16,6 +16,10 @@
     {
       "path": "/api/cron/products",
       "schedule": "0 5-17/2 * * *"
+    },
+    {
+      "path": "/api/cron/wishlist-alerts",
+      "schedule": "0 * * * *"
     }
   ]
 }

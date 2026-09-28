@@ -26,6 +26,7 @@ const OPEN_ROUTES = [
   "/api/inbound/", // Resend inbound email — verified by Svix signature
   "/api/cron/", // Vercel Cron — verified by CRON_SECRET
   "/api/internal/", // the Actions runner reporting back — verified by WORKER_SERVICE_TOKEN
+  "/api/storefront/", // shoppers via Shopify's App Proxy — verified by the proxy signature
 ];
 
 function isOpenRoute(pathname: string): boolean {
