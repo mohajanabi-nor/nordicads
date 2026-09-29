@@ -20,9 +20,9 @@ function tokenOf(url: URL): string | null {
 }
 
 async function customerFor(token: string) {
-  return sbSelectOne<{ customer_id: string; alerts_opt_in: boolean }>("wishlist_customers", {
+  return sbSelectOne<{ customer_id: string; alerts_choice: "in" | "out" | null }>("wishlist_customers", {
     token: eq(token),
-    select: "customer_id,alerts_opt_in",
+    select: "customer_id,alerts_choice",
   });
 }
 
@@ -55,7 +55,9 @@ export async function GET(req: Request) {
   const token = tokenOf(url);
   const c = token && (await customerFor(token));
   if (!c) return page(INVALID);
-  if (!c.alerts_opt_in) return page(DONE);
+  // Only an explicit "out" means stopped: someone getting alerts through their email
+  // subscription has made no choice yet, and still needs the button.
+  if (c.alerts_choice === "out") return page(DONE);
   return page(ASK, { action: `${url.pathname}${url.search}`, button: "Ja, stopp varslene" });
 }
 

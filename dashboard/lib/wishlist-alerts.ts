@@ -21,7 +21,8 @@
  * after checking once more that each one is still true. Changes that land within half
  * an hour of a customer's last alert wait for the hourly run and go out together.
  *
- * Only customers who ticked the opt-in on the wishlist page are ever emailed.
+ * Who is emailed is decided by consentFor (lib/wishlist.ts): the customer's own choice
+ * on the wishlist page if they made one, otherwise their email-marketing consent.
  *
  * Server-only.
  */
@@ -31,6 +32,7 @@ import { productsNow, type ProductNow } from "./shopify-admin";
 import { esc, renderCampaign } from "./email-template";
 import { isAllowedRecipient, maskEmail, sendOne } from "./resend";
 import { logInfo, logWarn } from "./eventlog";
+import { consentFor } from "./wishlist";
 
 /** A drop smaller than this isn't worth an email. */
 const MIN_DROP = 0.05;
@@ -58,6 +60,7 @@ interface CustomerRow {
   customer_id: string;
   email: string | null;
   alerts_opt_in: boolean;
+  alerts_choice: "in" | "out" | null;
   token: string;
   last_alert_at: string | null;
 }
@@ -74,7 +77,7 @@ interface EventRow {
 
 const ITEM_COLUMNS =
   "customer_id,handle,product_id,variant_id,baseline_price,last_price,last_available,last_back_in_stock_at";
-const CUSTOMER_COLUMNS = "customer_id,email,alerts_opt_in,token,last_alert_at";
+const CUSTOMER_COLUMNS = "customer_id,email,alerts_opt_in,alerts_choice,token,last_alert_at";
 
 /** The saved variant if it still exists, else the first one that can be bought. */
 function variantFor(p: ProductNow, variantId: string | null) {
@@ -116,6 +119,8 @@ export async function checkProducts(
     ).map((c) => [c.customer_id, c]),
   );
 
+  const consent = await consentFor(Array.from(customers.values()));
+
   const nowIso = new Date().toISOString();
   const touched = new Set<string>();
   let found = 0;
@@ -126,7 +131,7 @@ export async function checkProducts(
     const available = !!(p && p.active && v && v.available);
     const price = v && v.price > 0 ? v.price : null;
     const c = customers.get(item.customer_id);
-    const optedIn = !!(c && c.alerts_opt_in && c.email);
+    const optedIn = !!(c && c.email && consent.get(c.customer_id)?.optIn);
     const key = { customer_id: eq(item.customer_id), handle: eq(item.handle) };
 
     // ---- price drop
@@ -210,13 +215,33 @@ export async function checkAll(): Promise<{ checked: number; found: number; sent
 
 /** Send what's pending, one email per opted-in customer, respecting the quiet period. */
 export async function deliver(customerIds?: string[]): Promise<{ sent: number; skipped: number }> {
-  const filter: Record<string, string> = { alerts_opt_in: is(true), select: CUSTOMER_COLUMNS };
-  if (customerIds?.length) filter.customer_id = inList(customerIds);
-  const customers = await sbSelect<CustomerRow>("wishlist_customers", filter);
+  // Everyone with something waiting — consent is checked again now, since it may
+  // have changed since the change was found (unsubscribed from emails, unticked the box).
+  const pendingFilter: Record<string, string> = { status: eq("pending"), select: "customer_id" };
+  if (customerIds?.length) pendingFilter.customer_id = inList(customerIds);
+  const ids = unique((await sbSelect<{ customer_id: string }>("wishlist_events", pendingFilter)).map((e) => e.customer_id));
+  if (!ids.length) return { sent: 0, skipped: 0 };
+
+  const customers: CustomerRow[] = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    customers.push(
+      ...(await sbSelect<CustomerRow>("wishlist_customers", { customer_id: inList(ids.slice(i, i + 100)), select: CUSTOMER_COLUMNS })),
+    );
+  }
+  const consent = await consentFor(customers);
 
   let sent = 0;
   let skipped = 0;
   for (const c of customers) {
+    if (!consent.get(c.customer_id)!.optIn) {
+      await sbUpdate(
+        "wishlist_events",
+        { customer_id: eq(c.customer_id), status: eq("pending") },
+        { status: "skipped", note: "Ikke påmeldt varsler lenger da e-posten skulle sendes." },
+        { returning: false },
+      );
+      continue;
+    }
     if (c.last_alert_at && Date.now() - Date.parse(c.last_alert_at) < QUIET_PERIOD_MS) {
       continue; // the hourly run sends these together
     }
@@ -428,7 +453,7 @@ function renderAlert(c: CustomerRow, lines: AlertLine[]) {
     ctaUrl: `${STORE_URL}/pages/onskeliste`,
     ctaLabel: "Se ønskelisten",
     unsubscribeMailto: off,
-    footerReason: "Du får denne e-posten fordi du har slått på varsler for ønskelisten din hos Nordic Engros.",
+    footerReason: "",
     preheader: lines.map((l) => l.title).join(" · "),
   });
 

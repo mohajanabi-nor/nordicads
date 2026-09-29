@@ -25,6 +25,68 @@ interface CustomerRow {
   customer_id: string;
   email: string | null;
   alerts_opt_in: boolean;
+  alerts_choice: "in" | "out" | null;
+}
+
+// ---------------------------------------------------------------- consent ------
+
+/**
+ * Whether a customer gets wishlist alerts, and why.
+ *
+ *   choice     they ticked or unticked the box on the wishlist page, or clicked
+ *              "Meld deg av" in an alert. Always wins.
+ *   marketing  no choice yet: their email-marketing consent decides. Subscribed to
+ *              Nordic Engros's emails means subscribed to the alerts too (the client's
+ *              decision, 2026-09-29); unsubscribed, bounced or gone from Shopify means no.
+ */
+export interface Consent {
+  optIn: boolean;
+  via: "choice" | "marketing";
+}
+
+interface ContactRow {
+  email: string;
+  shopify_id: string | null;
+  subscribed: boolean;
+  invalid_email: boolean;
+  missing_in_shopify: boolean;
+}
+
+/** The same rule campaigns use (isMailable in lib/contacts.ts). */
+const mailable = (c: ContactRow) => c.subscribed && !c.invalid_email && !c.missing_in_shopify;
+
+export async function consentFor(
+  customers: Array<Pick<CustomerRow, "customer_id" | "email" | "alerts_opt_in" | "alerts_choice">>,
+): Promise<Map<string, Consent>> {
+  const out = new Map<string, Consent>();
+  const undecided = customers.filter((c) => {
+    if (c.alerts_choice) out.set(c.customer_id, { optIn: c.alerts_choice === "in", via: "choice" });
+    return !c.alerts_choice;
+  });
+  if (!undecided.length) return out;
+
+  // Contacts are matched on the Shopify id (stored there as a gid), then on email for
+  // anyone the customer sync hasn't linked yet.
+  const byGid = new Map<string, ContactRow>();
+  const byEmail = new Map<string, ContactRow>();
+  const gids = undecided.map((c) => `gid://shopify/Customer/${c.customer_id}`);
+  const emails = undecided.map((c) => c.email?.toLowerCase()).filter((e): e is string => !!e);
+  const cols = "email,shopify_id,subscribed,invalid_email,missing_in_shopify";
+  for (let i = 0; i < gids.length; i += 100) {
+    for (const r of await sbSelect<ContactRow>("contacts", { shopify_id: inList(gids.slice(i, i + 100)), select: cols })) {
+      if (r.shopify_id) byGid.set(r.shopify_id, r);
+    }
+  }
+  for (let i = 0; i < emails.length; i += 100) {
+    for (const r of await sbSelect<ContactRow>("contacts", { email: inList(emails.slice(i, i + 100)), select: cols })) {
+      byEmail.set(r.email.toLowerCase(), r);
+    }
+  }
+  for (const c of undecided) {
+    const contact = byGid.get(`gid://shopify/Customer/${c.customer_id}`) ?? (c.email ? byEmail.get(c.email.toLowerCase()) : undefined);
+    out.set(c.customer_id, { optIn: !!contact && mailable(contact), via: "marketing" });
+  }
+  return out;
 }
 
 interface ItemRow {
@@ -37,6 +99,8 @@ export interface WishlistState {
   items: Array<{ handle: string; variantId: string | null; addedAt: string }>;
   alerts: { optIn: boolean };
 }
+
+// -------------------------------------------------------------- the list ------
 
 /** Make sure the customer has a row; the email is filled in from Shopify on first sight. */
 async function ensureCustomer(customerId: string): Promise<CustomerRow> {
@@ -57,9 +121,13 @@ export async function getState(customerId: string): Promise<WishlistState> {
       limit: MAX_ITEMS,
     }),
   ]);
+  // The box shows what will actually happen, so a subscriber sees it ticked.
+  const consent = (
+    await consentFor([customer ?? { customer_id: customerId, email: null, alerts_opt_in: false, alerts_choice: null }])
+  ).get(customerId)!;
   return {
     items: items.map((i) => ({ handle: i.handle, variantId: i.variant_id, addedAt: i.added_at })),
-    alerts: { optIn: customer?.alerts_opt_in ?? false },
+    alerts: { optIn: consent.optIn },
   };
 }
 
@@ -117,40 +185,41 @@ export async function removeItems(customerId: string, handles: string[]): Promis
 }
 
 /**
- * Turn alert emails on or off.
+ * The customer's own choice: alerts on or off. From then on it overrides their
+ * email-marketing consent (see consentFor).
  *
  * Opting in refreshes the email from Shopify, since that is the address the
- * customer is consenting for. Both directions are logged: a consent change with
- * no record can't be shown later to have been the customer's own choice.
+ * customer is consenting for. Every choice is logged: a consent change with no
+ * record can't be shown later to have been the customer's own.
  */
 export async function setAlerts(
   customerId: string,
   change: { optIn: boolean },
 ): Promise<WishlistState["alerts"]> {
   const before = await ensureCustomer(customerId);
+  const was = (await consentFor([before])).get(customerId)!;
   const now = new Date().toISOString();
-  const patch: Record<string, unknown> = { updated_at: now };
 
   let email = before.email;
-  if (change.optIn === true && !before.alerts_opt_in) {
+  const patch: Record<string, unknown> = { updated_at: now, alerts_opt_in: change.optIn, alerts_choice: change.optIn ? "in" : "out" };
+  if (change.optIn) {
     email = (await customerEmail(customerId)) ?? before.email;
     if (!email) throw new Error("Fant ingen e-postadresse på kontoen");
-    Object.assign(patch, { alerts_opt_in: true, opt_in_at: now, email });
-  } else if (change.optIn === false && before.alerts_opt_in) {
-    Object.assign(patch, { alerts_opt_in: false, opt_out_at: now });
+    Object.assign(patch, { opt_in_at: now, email });
+  } else {
+    patch.opt_out_at = now;
   }
+  await sbUpdate("wishlist_customers", { customer_id: eq(customerId) }, patch, { returning: false });
 
-  const [after] = await sbUpdate<CustomerRow>("wishlist_customers", { customer_id: eq(customerId) }, patch);
-
-  if (after && after.alerts_opt_in !== before.alerts_opt_in) {
+  if (before.alerts_choice !== patch.alerts_choice) {
     await logInfo(
       "wishlist",
-      after.alerts_opt_in ? "wishlist.optIn" : "wishlist.optOut",
-      after.alerts_opt_in
+      change.optIn ? "wishlist.optIn" : "wishlist.optOut",
+      change.optIn
         ? `${maskEmail(email ?? "")} slo på varsler for ønskelisten.`
         : `${maskEmail(email ?? "")} slo av varsler for ønskelisten.`,
-      { customerId, source: "storefront" },
+      { customerId, source: "storefront", before: was },
     );
   }
-  return { optIn: after?.alerts_opt_in ?? before.alerts_opt_in };
+  return { optIn: change.optIn };
 }

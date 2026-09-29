@@ -58,7 +58,7 @@ export interface CampaignContent {
   /** Pre-rendered rows placed under the text (the wishlist alert's product list). */
   itemsHtml?: string;
   itemsText?: string;
-  /** Replaces "Du får denne e-posten fordi du er kunde hos …". */
+  /** Replaces "Du får denne e-posten fordi du er kunde hos …"; "" leaves the line out. */
   footerReason?: string;
   /** Extra links before "Meld deg av". */
   footerLinks?: Array<{ label: string; url: string }>;
@@ -121,6 +121,7 @@ export function renderCampaign(
 ): { html: string; text: string } {
   const who = senderIdentity();
   const paras = paragraphs(c.body);
+  const reason = c.footerReason ?? `Du får denne e-posten fordi du er kunde hos ${who.companyName}.`;
 
   const bodyHtml = paras
     .map(
@@ -300,7 +301,7 @@ ${darkRules}
             Org. ${esc(who.orgNr)} · ${esc(who.address)}<br>
             ${esc(who.email)} · ${esc(who.website)}
             <br><br>
-            ${esc(c.footerReason ?? `Du får denne e-posten fordi du er kunde hos ${who.companyName}.`)}<br>
+            ${reason ? `${esc(reason)}<br>` : ""}
             ${(c.footerLinks ?? [])
               .map((l) => `<a href="${esc(l.url)}" style="color:${MUTE};text-decoration:underline;">${esc(l.label)}</a> · `)
               .join("")}<a href="${esc(c.unsubscribeMailto)}" style="color:${MUTE};text-decoration:underline;">Meld deg av</a>
@@ -335,7 +336,7 @@ ${darkRules}
     `Org. ${who.orgNr} · ${who.address}`,
     `${who.email} · ${who.website}`,
     "",
-    c.footerReason ?? `Du får denne e-posten fordi du er kunde hos ${who.companyName}.`,
+    reason || null,
     ...(c.footerLinks ?? []).map((l) => `${l.label}: ${l.url}`),
     `Meld deg av: ${c.unsubscribeMailto}`,
   ]
