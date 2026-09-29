@@ -6,7 +6,8 @@
  * exercises the whole path — domain verification, API key, template, and the
  * attachment — against one recipient instead of five hundred.
  */
-import { campaignHeaders, idempotencyKey, unsubscribeMailto } from "@/lib/campaign-shared";
+import { campaignHeaders, idempotencyKey, personalize, unsubscribeUrl } from "@/lib/campaign-shared";
+import { unsubscribeTokens } from "@/lib/contacts";
 import { renderCampaign } from "@/lib/email-template";
 import { configProblems, isDryRun, sendOne } from "@/lib/resend";
 import { isValidEmail, normalizeEmail } from "@/lib/contacts";
@@ -66,16 +67,19 @@ export async function POST(req: Request) {
       ctaUrl: (body.ctaUrl ?? "").trim(),
       ctaLabel: (body.ctaLabel ?? "").trim() || "Se nyhetene i nettbutikken",
       attachmentName: attachment?.filename ?? null,
-      unsubscribeMailto: unsubscribeMailto(),
+      unsubscribeMailto: unsubscribeUrl(),
       preheader: body.preheader ?? "",
     });
 
+    // The test carries the tester's own "Meld deg av" link when they are a contact, so
+    // what's tested is what customers get. (Clicking it really unsubscribes them.)
+    const token = (await unsubscribeTokens([to])).get(to.trim().toLowerCase()) ?? null;
     const result = await sendOne({
       to,
       subject: `[TEST] ${(body.subject ?? "").trim() || "Nyheter fra Nordic Engros"}`,
-      html,
-      text,
-      headers: campaignHeaders(),
+      html: personalize(html, token),
+      text: personalize(text, token),
+      headers: campaignHeaders(token),
       attachment,
       // A fresh key per test, so repeated tests aren't deduplicated by Resend.
       idempotencyKey: idempotencyKey(`test-${Date.now()}`, to),

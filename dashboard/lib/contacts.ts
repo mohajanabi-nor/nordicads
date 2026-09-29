@@ -216,6 +216,20 @@ export async function setSubscribed(emails: string[], subscribed: boolean): Prom
   return changed.length;
 }
 
+/** Each address's personal unsubscribe token (see db/010), for the campaign links. */
+export async function unsubscribeTokens(emails: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const wanted = Array.from(new Set(emails.map(normalizeEmail)));
+  for (let i = 0; i < wanted.length; i += 100) {
+    const rows = await sbSelect<{ email: string; unsubscribe_token: string }>("contacts", {
+      email: inList(wanted.slice(i, i + 100)),
+      select: "email,unsubscribe_token",
+    });
+    for (const r of rows) out.set(r.email, r.unsubscribe_token);
+  }
+  return out;
+}
+
 export async function deleteContacts(emails: string[]): Promise<number> {
   const wanted = emails.map(normalizeEmail);
   if (!wanted.length) return 0;

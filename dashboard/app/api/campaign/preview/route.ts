@@ -7,7 +7,7 @@
  * light one. What the composer approves should be one fixed thing.
  */
 import { renderCampaign } from "@/lib/email-template";
-import { unsubscribeMailto } from "@/lib/campaign-shared";
+import { personalize, unsubscribeUrl } from "@/lib/campaign-shared";
 
 export const dynamic = "force-dynamic";
 
@@ -27,10 +27,11 @@ export async function POST(req: Request) {
       ctaUrl: (body.ctaUrl ?? "").trim(),
       ctaLabel: (body.ctaLabel ?? "").trim() || "Se nyhetene i nettbutikken",
       attachmentName: body.attachmentName ?? null,
-      unsubscribeMailto: unsubscribeMailto(),
+      unsubscribeMailto: unsubscribeUrl(),
       preheader: body.preheader ?? "",
     }, { forceLight: true });
-    return Response.json({ html, text });
+    // No recipient here, so the link shows as a preview link rather than a placeholder.
+    return Response.json({ html: personalize(html, null), text: personalize(text, null) });
   } catch (err) {
     return Response.json({ error: String((err as Error).message) }, { status: 500 });
   }

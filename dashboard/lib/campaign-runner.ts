@@ -22,10 +22,10 @@
  *
  * Server-only.
  */
-import { mailableEmails, markSent, recordPermanentFailure } from "./contacts";
+import { mailableEmails, markSent, recordPermanentFailure, unsubscribeTokens } from "./contacts";
 import { isAllowedRecipient, maskEmail, RateLimiter, sendOne, type Attachment } from "./resend";
 import { logError, logInfo, logWarn } from "./eventlog";
-import { campaignHeaders, idempotencyKey } from "./campaign-shared";
+import { campaignHeaders, idempotencyKey, personalize } from "./campaign-shared";
 import {
   appendRecipient,
   completedEmails,
@@ -222,6 +222,8 @@ async function sendLoop(
   const handled = await completedEmails(manifest.id);
   const queue = manifest.recipients.filter((e) => !handled.has(e));
   const mailable = await mailableEmails();
+  // Each recipient's own "Meld deg av" link goes into their copy (see personalize).
+  const tokens = await unsubscribeTokens(queue);
 
   let sent = 0;
   let failed = 0;
@@ -313,9 +315,9 @@ async function sendLoop(
         sendOne({
           to: email,
           subject: manifest.subject,
-          html: manifest.html,
-          text: manifest.text,
-          headers: campaignHeaders(),
+          html: personalize(manifest.html, tokens.get(email) ?? null),
+          text: personalize(manifest.text, tokens.get(email) ?? null),
+          headers: campaignHeaders(tokens.get(email) ?? null),
           attachment,
           // Same key on every retry AND on a later resume: Resend will not
           // deliver twice within 24 h even if our log lost the last write.

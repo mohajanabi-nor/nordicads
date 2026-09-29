@@ -8,27 +8,51 @@ import crypto from "node:crypto";
 import { senderIdentity } from "./email-template";
 
 /**
- * The unsubscribe address. Running on localhost there is no public URL for a
- * clickable link, so opt-out is a mailto: — which is RFC-valid and is what Gmail
- * and Outlook turn into their native "Unsubscribe" button. That button is the
- * difference between an unsubscribe and a spam complaint, so it matters more
- * than its simplicity suggests.
+ * The mailto: fallback for "Meld deg av". Kept in List-Unsubscribe beside the https
+ * link for the few mail clients that only understand mailto — whoever reads
+ * post@nordicengros.no then unsubscribes that person by hand.
  */
 export function unsubscribeMailto(): string {
   const to = process.env.EMAIL_UNSUBSCRIBE_TO || senderIdentity().email;
   return `mailto:${to}?subject=${encodeURIComponent("Avmelding nyhetsbrev")}`;
 }
 
+const DASHBOARD_URL = (process.env.DASHBOARD_PUBLIC_URL || "https://ads.nordicengros.no").replace(/\/+$/, "");
+
 /**
- * Headers set on every campaign message.
- *
- * Only `List-Unsubscribe` is emitted — deliberately NOT `List-Unsubscribe-Post`,
- * which advertises one-click and requires an HTTPS endpoint we do not have.
- * Claiming one-click support and then not honouring it is worse than not
- * claiming it.
+ * Stands in for the recipient's unsubscribe token in a rendered campaign. The HTML is
+ * rendered once per campaign (and stored, so a resume is byte-identical), then each
+ * recipient's copy gets their own token at send time — see personalize(). Plain
+ * letters and underscores so escaping and URL-encoding leave it untouched.
  */
-export function campaignHeaders(): Record<string, string> {
-  return { "List-Unsubscribe": `<${unsubscribeMailto()}>` };
+export const UNSUBSCRIBE_TOKEN = "__AVMELDINGSTOKEN__";
+
+/** The personal "Meld deg av" link: one click, no login (see /api/storefront/unsubscribe). */
+export function unsubscribeUrl(token: string = UNSUBSCRIBE_TOKEN): string {
+  return `${DASHBOARD_URL}/api/storefront/unsubscribe?t=${token}`;
+}
+
+/**
+ * This recipient's copy of the rendered campaign. Without a token (a test sent to an
+ * address that isn't a contact, or the preview), the link leads to a page saying it
+ * isn't a real one, rather than to an unsubscribe for somebody else.
+ */
+export function personalize(content: string, token: string | null): string {
+  return content.split(UNSUBSCRIBE_TOKEN).join(token ?? "forhandsvisning");
+}
+
+/**
+ * Headers for one recipient. With their token: the https link first, which Gmail and
+ * Outlook turn into their own one-click "Unsubscribe" button (RFC 8058 — that is what
+ * List-Unsubscribe-Post announces, and /api/storefront/unsubscribe honours it), and
+ * the mailto: as a fallback. Without one, only the mailto:.
+ */
+export function campaignHeaders(token: string | null = null): Record<string, string> {
+  if (!token) return { "List-Unsubscribe": `<${unsubscribeMailto()}>` };
+  return {
+    "List-Unsubscribe": `<${unsubscribeUrl(token)}>, <${unsubscribeMailto()}>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  };
 }
 
 /**

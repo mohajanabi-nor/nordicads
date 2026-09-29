@@ -6,7 +6,7 @@
  * which the client opens next, with a cron sweep finishing anything left — so
  * closing the tab delays a campaign rather than abandoning it.
  */
-import { unsubscribeMailto } from "@/lib/campaign-shared";
+import { unsubscribeUrl } from "@/lib/campaign-shared";
 import { createCampaign, newCampaignId, type CampaignManifest } from "@/lib/campaign-store";
 import { isValidEmail, mailableEmails, normalizeEmail } from "@/lib/contacts";
 import { readDropFile } from "@/lib/drops";
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
       ctaUrl: (body.ctaUrl ?? "").trim(),
       ctaLabel: (body.ctaLabel ?? "").trim() || "Se nyhetene i nettbutikken",
       attachmentName: attachment?.filename ?? null,
-      unsubscribeMailto: unsubscribeMailto(),
+      unsubscribeMailto: unsubscribeUrl(),
       preheader: body.preheader ?? "",
     });
 
