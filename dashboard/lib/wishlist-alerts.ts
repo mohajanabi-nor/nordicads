@@ -97,9 +97,11 @@ const unique = <T>(xs: T[]) => Array.from(new Set(xs));
  */
 export async function checkProducts(
   productIds: string[],
-): Promise<{ checked: number; found: number; sent: number }> {
+  /** Stop here (epoch ms) and leave the rest for the next run — see checkAll. */
+  deadline?: number,
+): Promise<{ checked: number; found: number; sent: number; cutShort: boolean }> {
   const ids = unique(productIds.filter(Boolean));
-  if (!ids.length) return { checked: 0, found: 0, sent: 0 };
+  if (!ids.length) return { checked: 0, found: 0, sent: 0, cutShort: false };
 
   const items: ItemRow[] = [];
   for (let i = 0; i < ids.length; i += 100) {
@@ -107,7 +109,7 @@ export async function checkProducts(
       ...(await sbSelect<ItemRow>("wishlist_items", { product_id: inList(ids.slice(i, i + 100)), select: ITEM_COLUMNS })),
     );
   }
-  if (!items.length) return { checked: 0, found: 0, sent: 0 };
+  if (!items.length) return { checked: 0, found: 0, sent: 0, cutShort: false };
 
   const now = await productsNow(unique(items.map((i) => i.product_id!)));
   const customers = new Map(
@@ -125,7 +127,14 @@ export async function checkProducts(
   const touched = new Set<string>();
   let found = 0;
 
+  let checked = 0;
+  let cutShort = false;
   for (const item of items) {
+    if (deadline && Date.now() > deadline) {
+      cutShort = true; // a slow database: the rest waits for the next hour
+      break;
+    }
+    checked++;
     const p = now.get(item.product_id!);
     const v = p ? variantFor(p, item.variant_id) : null;
     const available = !!(p && p.active && v && v.available);
@@ -201,20 +210,33 @@ export async function checkProducts(
     }
   }
 
-  const sent = touched.size ? (await deliver(Array.from(touched))).sent : 0;
-  return { checked: items.length, found, sent };
+  const sent = touched.size ? (await deliver(Array.from(touched), deadline)).sent : 0;
+  return { checked, found, sent, cutShort };
 }
 
 /** Every saved product, checked. The hourly safety net behind the webhooks. */
-export async function checkAll(): Promise<{ checked: number; found: number; sent: number }> {
+/**
+ * How long the hourly run may spend before stopping cleanly. Normally it takes seconds;
+ * this only matters when Supabase or Shopify is slow (each call waits up to 15 s), and
+ * it keeps the run well inside Vercel's 5-minute limit — a function killed at the limit
+ * never tells Sentry it finished, which reads as a hung job.
+ */
+export const HOURLY_BUDGET_MS = 3.5 * 60 * 1000;
+
+export async function checkAll(
+  deadline = Date.now() + HOURLY_BUDGET_MS,
+): Promise<{ checked: number; found: number; sent: number; cutShort: boolean }> {
   const rows = await sbSelect<{ product_id: string | null }>("wishlist_items", { select: "product_id" });
-  return checkProducts(unique(rows.map((r) => r.product_id!).filter(Boolean)));
+  return checkProducts(unique(rows.map((r) => r.product_id!).filter(Boolean)), deadline);
 }
 
 // ------------------------------------------------------------------ sending ------
 
 /** Send what's pending, one email per opted-in customer, respecting the quiet period. */
-export async function deliver(customerIds?: string[]): Promise<{ sent: number; skipped: number }> {
+export async function deliver(
+  customerIds?: string[],
+  deadline?: number,
+): Promise<{ sent: number; skipped: number }> {
   // Everyone with something waiting — consent is checked again now, since it may
   // have changed since the change was found (unsubscribed from emails, unticked the box).
   const pendingFilter: Record<string, string> = { status: eq("pending"), select: "customer_id" };
@@ -233,6 +255,7 @@ export async function deliver(customerIds?: string[]): Promise<{ sent: number; s
   let sent = 0;
   let skipped = 0;
   for (const c of customers) {
+    if (deadline && Date.now() > deadline) break; // still pending: the next run sends it
     if (!consent.get(c.customer_id)!.optIn) {
       await sbUpdate(
         "wishlist_events",

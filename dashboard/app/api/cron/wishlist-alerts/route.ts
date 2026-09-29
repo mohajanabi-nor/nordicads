@@ -9,8 +9,9 @@
  * doesn't happen at all (Vercel cron stopped, deploy broke the route) raises an alert.
  */
 import * as Sentry from "@sentry/nextjs";
-import { checkAll, deliver } from "@/lib/wishlist-alerts";
-import { logError, logInfo } from "@/lib/eventlog";
+import { HOURLY_BUDGET_MS, checkAll, deliver } from "@/lib/wishlist-alerts";
+import { flushReports } from "@/lib/monitoring";
+import { logError, logInfo, logWarn } from "@/lib/eventlog";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -31,10 +32,11 @@ export async function GET(req: Request) {
     return Response.json({ error: "ugyldig cron-token" }, { status: 401 });
   }
   try {
+    const deadline = Date.now() + HOURLY_BUDGET_MS;
     // Inside the monitor, so a failure marks the check-in as failed before it's caught below.
     const { checked, waited } = await Sentry.withMonitor(
       "wishlist-hourly",
-      async () => ({ checked: await checkAll(), waited: await deliver() }),
+      async () => ({ checked: await checkAll(deadline), waited: await deliver(undefined, deadline) }),
       {
         schedule: { type: "crontab", value: "0 * * * *" },
         timezone: "Etc/UTC",
@@ -42,8 +44,19 @@ export async function GET(req: Request) {
         maxRuntime: 10, // minutes before a run counts as hung
       },
     );
+    // The check-in has to leave before the response does: Vercel may freeze the function
+    // straight after, and a lost "ok" check-in reads in Sentry as a run that hung.
+    await flushReports();
     // Emails sent the moment a change was found, plus ones that waited out a quiet period.
     const sent = checked.sent + waited.sent;
+    if (checked.cutShort) {
+      await logWarn(
+        "wishlist",
+        "wishlist.hourlyCutShort",
+        `Timesjekken stoppet etter ${Math.round(HOURLY_BUDGET_MS / 60000 * 10) / 10} min (${checked.checked} varer sjekket) — databasen eller Shopify svarte tregt. Resten tas neste time.`,
+        { checked },
+      );
+    }
     if (checked.found || sent) {
       await logInfo(
         "wishlist",
@@ -56,6 +69,7 @@ export async function GET(req: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await logError("wishlist", "wishlist.hourlyFailed", `Timesjekk av ønskelister feilet: ${message}`);
+    await flushReports(); // the failed check-in, likewise
     return Response.json({ error: message }, { status: 500 });
   }
 }
