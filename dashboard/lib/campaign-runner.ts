@@ -434,7 +434,7 @@ async function sendLoop(
   } else if (!aborted) {
     // Out of budget, not out of work. Say so plainly rather than looking done.
     emit("log", {
-      line: `Pause — ${after.remaining} gjenstår. Fortsetter automatisk innen et minutt.`,
+      line: `Pause — ${after.remaining} gjenstår. Fortsetter automatisk innen fem minutter.`,
     });
   }
 
