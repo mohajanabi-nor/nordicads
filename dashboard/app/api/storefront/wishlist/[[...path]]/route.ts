@@ -13,6 +13,8 @@
  *   POST remove  { handle }
  *   POST merge   { items: [{ handle, variantId?, addedAt? }] }   (a guest list, on first login)
  *   POST alerts  { optIn }
+ *   POST client-error { message, stack?, where?, page? }   (the script's own errors → Sentry;
+ *                                                            accepted from guests too)
  *
  * Every response carries the full state, so the page never has to guess what was saved.
  */
@@ -26,6 +28,7 @@ import {
   validHandle,
 } from "@/lib/wishlist";
 import { logError } from "@/lib/eventlog";
+import { flushReports, reportStorefrontError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -60,6 +63,7 @@ export async function GET(req: Request, { params }: { params: { path?: string[] 
 }
 
 export async function POST(req: Request, { params }: { params: { path?: string[] } }) {
+  if (action(params) === "client-error") return clientError(req);
   const who = identify(req);
   if (who instanceof Response) return who;
 
@@ -121,4 +125,32 @@ async function failed(act: string, customerId: string, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   await logError("wishlist", "wishlist.requestFailed", `Ønskeliste (${act}) feilet: ${message}`, { customerId });
   return json({ error: "Noe gikk galt. Prøv igjen." }, 500);
+}
+
+/** Short strings only: this is a crash report, not a place to upload things. */
+const clip = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : undefined);
+
+async function clientError(req: Request) {
+  // Still only through Shopify's proxy, so it can't be used as an open relay into Sentry.
+  const check = verifyAppProxy(new URL(req.url));
+  if (!check.ok) return json({ error: check.reason }, 401);
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return json({ ok: false }, 400);
+  }
+  const message = clip(body.message, 500);
+  if (message) {
+    reportStorefrontError({
+      message,
+      stack: clip(body.stack, 4000),
+      where: clip(body.where, 60),
+      page: clip(body.page, 300),
+      userAgent: clip(req.headers.get("user-agent"), 300),
+      loggedIn: !!check.identity.customerId,
+    });
+    await flushReports();
+  }
+  return json({ ok: true });
 }

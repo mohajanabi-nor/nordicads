@@ -29,10 +29,51 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Iterable
 
 import requests
+
+# Sentry: a failed run (or a crash in this wrapper) is reported with the command, the
+# exit code and the tail of the worker's output — where its traceback is. Off unless the
+# SENTRY_DSN secret is set, and harmless if the package is missing.
+try:
+    import sentry_sdk
+except ImportError:  # pragma: no cover
+    sentry_sdk = None
+
+SENTRY_ON = bool(sentry_sdk and os.environ.get("SENTRY_DSN"))
+if SENTRY_ON:
+    sentry_sdk.init(
+        dsn=os.environ["SENTRY_DSN"],
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        release=os.environ.get("SENTRY_RELEASE") or None,
+        send_default_pii=False,
+        traces_sample_rate=0,
+    )
+    sentry_sdk.set_tag("source", "worker")
+
+_EMAIL = re.compile(r"([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+
+
+def report_failure(job_id: str, command: str, code: int, tail: Iterable[str], message: str) -> None:
+    """One Sentry issue per worker command, with what's needed to fix it."""
+    if not SENTRY_ON:
+        return
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("command", command)
+        scope.set_tag("exit_code", str(code))
+        scope.fingerprint = ["worker", command]
+        # Customer addresses appear in sync output; masked like the dashboard does.
+        scope.set_context("run", {
+            "job_id": job_id,
+            "github_run": os.environ.get("GITHUB_SERVER_URL", "") + "/" + os.environ.get("GITHUB_REPOSITORY", "")
+            + "/actions/runs/" + os.environ.get("GITHUB_RUN_ID", ""),
+            "last_output": _EMAIL.sub(r"\1***@\2", "\n".join(tail)),
+        })
+        sentry_sdk.capture_message(f"worker {command} failed: {message}", level="error")
+    sentry_sdk.flush(timeout=5)
 
 WORKER_DIR = Path(__file__).resolve().parent
 SRC_DIR = WORKER_DIR / "src"
@@ -313,6 +354,7 @@ def main() -> int:
         set_status(job_id, status="failed", exit_code=2, ended_at="now()",
                    error_message=message)
         print(f"[ci] {message}", file=sys.stderr)
+        report_failure(job_id, argv[0], 2, [], message)
         return 2
 
     env = {
@@ -336,6 +378,7 @@ def main() -> int:
 
     seq = 0
     pending: list[str] = []
+    tail: deque[str] = deque(maxlen=80)  # for the Sentry report if the run fails
     last_flush = time.monotonic()
     drop_dir: str | None = None
     customers_payload: str | None = None
@@ -379,6 +422,7 @@ def main() -> int:
         # from GitHub alone if Supabase was unreachable.
         print(line, flush=True)
         pending.append(line)
+        tail.append(line)
 
         if line.startswith(CUSTOMERS_SENTINEL):
             customers_payload = line[len(CUSTOMERS_SENTINEL):]
@@ -416,6 +460,8 @@ def main() -> int:
         ended_at="now()",
         error_message=None if code == 0 else f"worker avsluttet med kode {code}",
     )
+    if code != 0:
+        report_failure(job_id, argv[0], code, tail, f"exit code {code}")
     return code
 
 

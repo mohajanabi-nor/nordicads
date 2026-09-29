@@ -16,3 +16,5 @@ imageio-ffmpeg>=0.5
 # instead of spawning it as a local child process.
 fastapi>=0.115
 uvicorn[standard]>=0.32
+# Error reports to Sentry from GitHub Actions runs (ci_run.py). Inactive without SENTRY_DSN.
+sentry-sdk>=2.20

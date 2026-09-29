@@ -116,7 +116,6 @@
   .ne-wl-alerts input { accent-color: {{ settings.color_primary | default: '#ffa40b' }}; width: 18px; height: 18px; margin: 0; }
   .ne-wl-optin { display: flex; align-items: flex-start; gap: 10px; margin: 0; font-weight: 500; cursor: pointer; }
   .ne-wl-optin input { flex: none; margin-top: 2px; }
-  .ne-wl-note { margin: 10px 0 0 28px; font-size: 13px; color: #666; }
 </style>
 
 <script>
@@ -157,13 +156,43 @@
     cartFailed: 'Kunne ikke oppdatere handlekurven',
     syncFailed: 'Kunne ikke lagre ønskelisten. Prøv igjen.',
     alertsLabel: 'Varsle meg på e-post når en vare i ønskelisten får lavere pris eller er tilbake på lager',
-    alertsNote: 'Du kan slå av varslene her når som helst, eller med lenken i e-posten.',
     alertsOn: 'Varsler er slått på',
     alertsOff: 'Varsler er slått av',
     alertsFailed: 'Kunne ikke lagre innstillingen. Prøv igjen.'
   };
 
   var HEART = '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="ne-wl-fill" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 20.5s-7.5-4.6-9.3-9.2C1.4 8 3.4 4.5 6.9 4.5c2 0 3.6 1.1 5.1 3 1.5-1.9 3.1-3 5.1-3 3.5 0 5.5 3.5 4.2 6.8-1.8 4.6-9.3 9.2-9.3 9.2z"/></svg>';
+
+  // ---- error reports ----
+  // Our own script's errors go to Sentry through the dashboard (/apps/onskeliste/client-error),
+  // with where they happened, so a broken heart on the storefront doesn't go unnoticed.
+  // Only code in this file reports: the theme's and other apps' errors are not ours to chase.
+  var reported = 0;
+  function report(err, where) {
+    try {
+      var msg = err && err.message ? String(err.message) : String(err);
+      // The shopper's own connection dropping is not a bug.
+      if (/Failed to fetch|NetworkError|Load failed|aborted/i.test(msg)) return;
+      if (reported >= 5) return; // one broken page mustn't flood the report
+      reported++;
+      fetch(API + 'client-error', {
+        method: 'POST', credentials: 'same-origin', keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: msg,
+          stack: err && err.stack ? String(err.stack) : '',
+          where: where,
+          page: location.pathname + location.search
+        })
+      }).catch(function () {});
+    } catch (e) {}
+  }
+  // Runs fn, and reports instead of letting an error break the rest of the page.
+  function guard(fn, where) {
+    return function () {
+      try { return fn.apply(this, arguments); } catch (e) { report(e, where); }
+    };
+  }
 
   // ---- storage ----
   function load() {
@@ -275,7 +304,7 @@
     b.className = 'ne-wl-heart' + (inline ? ' ne-wl-heart--inline' : '');
     b.setAttribute('data-ne-wl-handle', handle);
     b.innerHTML = HEART + (inline ? '<span class="ne-wl-label"></span>' : '');
-    b.addEventListener('click', function (e) {
+    b.addEventListener('click', guard(function (e) {
       e.preventDefault();
       e.stopPropagation();
       var variant = null;
@@ -285,7 +314,7 @@
         variant = input ? input.value : null;
       }
       toggle(handle, variant);
-    });
+    }, 'heart'));
     return b;
   }
 
@@ -472,7 +501,7 @@
     var minus = box.querySelector('[data-step="-1"]');
     function show() { out.textContent = qty; minus.disabled = qty <= 0; }
     show();
-    box.addEventListener('click', function (e) {
+    box.addEventListener('click', guard(function (e) {
       var btn = e.target.closest('button[data-step]');
       if (!btn || box.classList.contains('is-busy')) return;
       var next = qty + Number(btn.getAttribute('data-step'));
@@ -499,7 +528,7 @@
         box.classList.remove('is-busy');
         btn.classList.remove('is-loading');
       });
-    });
+    }, 'stepper'));
   }
   function post(url, body) {
     return fetch(url, {
@@ -544,20 +573,19 @@
     if (!box || !alerts) return;
     box.innerHTML =
       '<label class="ne-wl-optin"><input type="checkbox"' + (alerts.optIn ? ' checked' : '') + '> ' +
-        '<span>' + esc(T.alertsLabel) + '</span></label>' +
-      '<p class="ne-wl-note">' + esc(T.alertsNote) + '</p>';
+        '<span>' + esc(T.alertsLabel) + '</span></label>';
     box.hidden = false;
     box.classList.remove('is-busy');
 
     var input = box.querySelector('.ne-wl-optin input');
-    input.addEventListener('change', function () {
+    input.addEventListener('change', guard(function () {
       var on = input.checked;
       box.classList.add('is-busy');
       input.disabled = true;
       server('alerts', { optIn: on })
         .then(function () { toast(on ? T.alertsOn : T.alertsOff, false); })
         .catch(function () { toast(T.alertsFailed, false); renderAlerts(); });
-    });
+    }, 'alerts'));
   }
 
   function renderPage() {
@@ -614,7 +642,7 @@
         grid.appendChild(el);
       });
       refresh();
-    });
+    }).catch(function (e) { report(e, 'wishlist-page'); });
   }
 
   // Removing an item on the wishlist page takes its card away too.
@@ -631,12 +659,12 @@
   // Another tab changed the list.
   window.addEventListener('storage', function (e) { if (e.key === KEY) refresh(); });
 
-  function scan() {
+  var scan = guard(function () {
     scanCards();
     scanProductPage();
     scanHeader();
     refresh();
-  }
+  }, 'scan');
 
   function start() {
     scan();
@@ -647,7 +675,7 @@
     syncOnStart().then(function (synced) {
       if (synced && JSON.stringify(load()) !== before) renderPage();
       renderAlerts();
-    });
+    }).catch(function (e) { report(e, 'sync'); });
     // Cards added later (filters, infinite scroll, sliders) get their heart too,
     // and a header that only shows at another screen width gets its icon.
     var pending;
@@ -656,6 +684,7 @@
     window.addEventListener('resize', later);
   }
 
+  start = guard(start, 'start');
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();

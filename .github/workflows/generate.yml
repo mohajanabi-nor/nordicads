@@ -102,6 +102,9 @@ jobs:
           # that decide what to do with it live in the dashboard, not here.
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           WORKER_SERVICE_TOKEN: ${{ secrets.WORKER_SERVICE_TOKEN }}
+          # Failed runs are reported to Sentry (ci_run.py). Unset = no reports.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_RELEASE: ${{ github.sha }}
         run: |
           set -euo pipefail
           args="$IN_COMMAND"

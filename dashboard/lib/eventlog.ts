@@ -15,6 +15,7 @@
  */
 import { eq, gt, ilike, lt, sbDelete, sbInsert, sbSelectPage } from "./supabase";
 import { getAppState, setAppState } from "./app-state";
+import { flushReports, report, shouldReport } from "./monitoring";
 
 /** Log lines carry email addresses, so they are personal data. Keep a year. */
 const RETENTION_MONTHS = 12;
@@ -55,6 +56,12 @@ export interface LogEntry {
  * it returns a response, and an un-awaited write can be lost with it.
  */
 export async function logEvent(entry: Omit<LogEntry, "at"> & { at?: string }): Promise<void> {
+  // Sentry first and independently: when Supabase itself is the failure, the insert
+  // below fails too, and the Logg tab alone would never show it.
+  if (shouldReport(entry.level, entry.event)) {
+    report(entry.level === "error" ? "error" : "warn", entry.source, entry.event, entry.message, entry.data);
+    await flushReports();
+  }
   try {
     await sbInsert("event_log", {
       at: entry.at ?? new Date().toISOString(),

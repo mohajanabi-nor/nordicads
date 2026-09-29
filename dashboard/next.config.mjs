@@ -1,3 +1,6 @@
+// Since @sentry/nextjs v11 the build wrapper lives in its own entry point.
+import { withSentryConfig } from "@sentry/nextjs/config";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
@@ -14,4 +17,17 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+// Sentry (lib/sentry-options.ts). At build time this uploads source maps, so a browser
+// error points at the real line instead of minified code — only when SENTRY_AUTH_TOKEN,
+// SENTRY_ORG and SENTRY_PROJECT are set in Vercel. Without them the build is unchanged.
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  // The EU region; the auth token would say so too, but explicit is clearer.
+  sentryUrl: process.env.SENTRY_URL || "https://de.sentry.io/",
+  silent: !process.env.CI,
+  widenClientFileUpload: true,
+  sourcemaps: { disable: !process.env.SENTRY_AUTH_TOKEN, deleteSourcemapsAfterUpload: true },
+  telemetry: false,
+});
