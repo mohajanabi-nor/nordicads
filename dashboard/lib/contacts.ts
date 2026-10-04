@@ -196,9 +196,13 @@ export function filterContacts(
   });
 }
 
-/** Newest first, so a fresh sync is visible at the top. */
+/** People a campaign can reach come first (subscribed, with a usable address);
+ *  within each group, newest first so a fresh sync is visible near the top. */
 export function sortContacts(contacts: Contact[]): Contact[] {
-  return [...contacts].sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+  return [...contacts].sort((a, b) => {
+    const byMailable = Number(isMailable(b)) - Number(isMailable(a));
+    return byMailable || b.addedAt.localeCompare(a.addedAt);
+  });
 }
 
 // -------------------------------------------------------------- mutations ---
