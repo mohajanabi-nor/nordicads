@@ -83,6 +83,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
               dryRun: manifest.dryRun,
               restored: true,
             });
+          } else if (result.pausedUntil) {
+            send("error", {
+              message:
+                `Pause: Resend-kvoten er brukt opp. ${p.sent} er sendt, ${p.remaining} gjenstår. ` +
+                "Kampanjen fortsetter automatisk når kvoten er tilbake.",
+            });
           } else {
             send("log", { line: "Utsendingen kjører allerede — følger med." });
           }

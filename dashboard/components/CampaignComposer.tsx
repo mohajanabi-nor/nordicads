@@ -45,7 +45,7 @@ export default function CampaignComposer({
   const [testTo, setTestTo] = useState("");
   const [testState, setTestState] = useState<{ ok: boolean; msg: string } | null>(null);
   const [testing, setTesting] = useState(false);
-  /** The send button unlocks only after a successful test of THIS exact content. */
+  /** Only drives the "✓ testet" badge; a test is no longer required to send. */
   const [testedKey, setTestedKey] = useState<string | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -281,7 +281,7 @@ export default function CampaignComposer({
 
   const sending = phase === "sending";
   const tested = testedKey === contentKey;
-  const canSend = recipients.length > 0 && subject.trim() !== "" && tested && !sending;
+  const canSend = recipients.length > 0 && subject.trim() !== "" && !sending;
   const pct = counts.total ? Math.round(((counts.sent + counts.failed + counts.skipped) / counts.total) * 100) : 0;
 
   const input =
@@ -420,10 +420,9 @@ export default function CampaignComposer({
 
         {/* ---- test send ---- */}
         <div className="mt-4 rounded-xl border border-orange/25 bg-orange/5 p-4">
-          <p className="text-sm font-bold text-ink">1. Send en test til deg selv</p>
+          <p className="text-sm font-bold text-ink">Send en test til deg selv (valgfritt)</p>
           <p className="mt-0.5 text-[11px] text-mute">
-            Påkrevd. Knappen «Send kampanje» låses opp først når en test av akkurat dette innholdet
-            har gått gjennom.
+            Anbefalt, men ikke påkrevd — du kan sende kampanjen uten.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
@@ -459,17 +458,12 @@ export default function CampaignComposer({
                 ? "Velg minst én mottaker i kontaktlisten"
                 : !subject.trim()
                   ? "Emnefeltet må fylles ut"
-                  : !tested
-                    ? "Send en test til deg selv først"
-                    : `Send til ${recipients.length} mottakere`
+                  : `Send til ${recipients.length} mottakere`
             }
             className="rounded-xl bg-orange px-5 py-2.5 text-sm font-bold text-cream shadow-sm transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {sending ? "Sender…" : `2. Send kampanje (${recipients.length})`}
+            {sending ? "Sender…" : `Send kampanje (${recipients.length})`}
           </button>
-          {!tested && subject.trim() && recipients.length > 0 && (
-            <span className="text-sm text-mute">Send en test først for å låse opp.</span>
-          )}
         </div>
 
         {/* ---- progress ---- */}

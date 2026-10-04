@@ -45,6 +45,23 @@ export interface RunnerEvent {
 export type Emit = (event: RunnerEvent["event"], data: Record<string, unknown>) => void;
 
 const MAX_ATTEMPTS = 3;
+/** How long every campaign waits after Resend says the sending quota is spent
+ *  (e.g. 100/day on the free plan). Short enough to resume soon after the quota
+ *  resets, long enough that the 5-minute sweep isn't hammering a closed door. */
+const QUOTA_PAUSE_MS = 60 * 60 * 1000;
+const QUOTA_PAUSE_KEY = "campaign.quotaPause";
+
+/** ISO time the quota pause ends, or null when sending is not paused. Account-
+ *  wide on purpose: the quota belongs to the Resend account, not a campaign. */
+export async function quotaPausedUntil(): Promise<string | null> {
+  try {
+    const row = await getAppState<{ until?: string }>(QUOTA_PAUSE_KEY);
+    if (row?.until && Date.parse(row.until) > Date.now()) return row.until;
+  } catch {
+    /* unreadable state must never block a send */
+  }
+  return null;
+}
 /** Lease TTL: long enough to cover a batch, short enough that a driver which
  *  dies mid-send does not block the campaign for long. */
 const LEASE_SECONDS = 180;
@@ -132,6 +149,8 @@ export interface BatchResult extends CampaignProgress {
   /** True when the whole campaign is finished, not merely this batch. */
   complete: boolean;
   aborted: boolean;
+  /** Set when sending is waiting on Resend's quota; the campaign resumes by itself. */
+  pausedUntil?: string;
 }
 
 const EMPTY: CampaignProgress = {
@@ -165,6 +184,12 @@ export async function runCampaignBatch(
   // contacted stay recorded, the rest are simply never attempted.
   if (await isCancelled(campaignId)) {
     return { ...before, ran: false, complete: false, aborted: true };
+  }
+
+  // Quota spent a moment ago: wait quietly instead of failing again every tick.
+  const pausedUntil = await quotaPausedUntil();
+  if (pausedUntil) {
+    return { ...before, ran: false, complete: false, aborted: false, pausedUntil };
   }
 
   // One driver at a time. Without this the stream and the cron sweep could both
@@ -231,6 +256,7 @@ async function sendLoop(
   const sentEmails: string[] = [];
   const permanentlyFailed: string[] = [];
   let fatal: string | null = null;
+  let quotaHit: string | null = null;
   let aborted = false;
 
   emit("start", {
@@ -339,6 +365,12 @@ async function sendLoop(
         break;
       }
 
+      // Not recorded for this recipient, so they are retried once quota returns.
+      if (result.quota) {
+        quotaHit = result.message;
+        break;
+      }
+
       if (result.kind === "fatal") {
         fatal = `${result.message} (HTTP ${result.status})`;
         break;
@@ -368,7 +400,7 @@ async function sendLoop(
       await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 250);
     }
 
-    if (fatal) break;
+    if (fatal || quotaHit) break;
     progress(email);
   }
 
@@ -400,6 +432,22 @@ async function sendLoop(
   }
 
   const after = await campaignProgress(manifest);
+
+  if (quotaHit) {
+    const until = new Date(Date.now() + QUOTA_PAUSE_MS).toISOString();
+    await setAppState(QUOTA_PAUSE_KEY, { until }).catch(() => undefined);
+    const message =
+      `Resend-kvoten er brukt opp (${quotaHit}). ${after.sent} er sendt, ${after.remaining} gjenstår. ` +
+      "Kampanjen fortsetter automatisk når kvoten er tilbake — du trenger ikke gjøre noe.";
+    // A warning, not an error: nothing is broken, the campaign is only waiting.
+    await logWarn("campaign", "campaign.quotaPaused", message, {
+      campaignId: manifest.id,
+      sent: after.sent,
+      remaining: after.remaining,
+    });
+    emit("error", { message });
+    return { ...after, ran: true, complete: false, aborted, pausedUntil: until };
+  }
 
   if (fatal) {
     const message =

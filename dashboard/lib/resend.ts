@@ -45,7 +45,7 @@ export type SendFailureKind = "transient" | "permanent" | "fatal";
 
 export type SendResult =
   | { ok: true; id: string; dryRun?: boolean }
-  | { ok: false; kind: SendFailureKind; status: number; message: string };
+  | { ok: false; kind: SendFailureKind; status: number; message: string; quota?: boolean };
 
 export function isDryRun(): boolean {
   return process.env.EMAIL_DRY_RUN === "1";
@@ -118,6 +118,9 @@ const FATAL_NAMES = new Set([
   "suspended_api_key",
   "invalid_permission",
 ]);
+
+/** Out of sending quota — not a broken setup. The campaign should wait, not die. */
+const QUOTA_NAMES = new Set(["daily_quota_exceeded", "monthly_quota_exceeded", "email_above_quota"]);
 
 const TRANSIENT_NAMES = new Set([
   "rate_limit_exceeded",
@@ -207,6 +210,7 @@ export async function sendOne(input: SendInput): Promise<SendResult> {
       kind: classify(res.status, parsed.name ?? ""),
       status: res.status,
       message: parsed.message || parsed.name || raw.slice(0, 200) || `HTTP ${res.status}`,
+      quota: QUOTA_NAMES.has(parsed.name ?? ""),
     };
   } catch (err) {
     // Timeout or connection reset: we do NOT know whether Resend accepted it.
