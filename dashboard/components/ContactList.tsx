@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLang } from "@/lib/i18n";
 import type {
   Contact,
   ContactFilter,
@@ -11,18 +12,18 @@ import type {
 
 const PAGE_SIZE = 50;
 
-const FILTERS: { key: ContactFilter; label: string }[] = [
-  { key: "alle", label: "Alle" },
-  { key: "abonnerer", label: "Abonnerer" },
-  { key: "avmeldt", label: "Avmeldt" },
-  { key: "ugyldig", label: "Ugyldig adresse" },
-  { key: "borte", label: "Borte fra Shopify" },
+const FILTERS: { key: ContactFilter; no: string; en: string }[] = [
+  { key: "alle", no: "Alle", en: "All" },
+  { key: "abonnerer", no: "Abonnerer", en: "Subscribed" },
+  { key: "avmeldt", no: "Avmeldt", en: "Unsubscribed" },
+  { key: "ugyldig", no: "Ugyldig adresse", en: "Invalid address" },
+  { key: "borte", no: "Borte fra Shopify", en: "Gone from Shopify" },
 ];
 
-function fmtDate(iso: string | null): string {
+function fmtDate(iso: string | null, locale: string): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleDateString("no-NO", {
+    return new Date(iso).toLocaleDateString(locale, {
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -32,10 +33,10 @@ function fmtDate(iso: string | null): string {
   }
 }
 
-function fmtWhen(iso: string | null): string {
-  if (!iso) return "aldri";
+function fmtWhen(iso: string | null, locale: string, never: string): string {
+  if (!iso) return never;
   try {
-    return new Date(iso).toLocaleString("no-NO", {
+    return new Date(iso).toLocaleString(locale, {
       day: "2-digit",
       month: "short",
       hour: "2-digit",
@@ -47,12 +48,14 @@ function fmtWhen(iso: string | null): string {
 }
 
 /** "om 21 t" / "nå" — enough for the operator to know the sync is alive. */
-function fmtIn(iso: string | null): string {
+function fmtIn(iso: string | null, t: (no: string, en: string) => string): string {
   if (!iso) return "";
   const ms = new Date(iso).getTime() - Date.now();
-  if (ms <= 0) return "nå";
+  if (ms <= 0) return t("nå", "now");
   const hours = Math.round(ms / 3_600_000);
-  return hours >= 1 ? `om ${hours} t` : `om ${Math.max(1, Math.round(ms / 60_000))} min`;
+  return hours >= 1
+    ? t(`om ${hours} t`, `in ${hours} h`)
+    : t(`om ${Math.max(1, Math.round(ms / 60_000))} min`, `in ${Math.max(1, Math.round(ms / 60_000))} min`);
 }
 
 /** Why a contact cannot be mailed, or null when it can. */
@@ -69,6 +72,7 @@ export default function ContactList({
   /** The picked recipients, already narrowed to those who actually get mail. */
   onSelectionChange?: (mailableEmails: string[]) => void;
 }) {
+  const { t, locale } = useLang();
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [stats, setStats] = useState({
     count: 0,
@@ -231,8 +235,12 @@ export default function ContactList({
     if (emails.length === 0) return;
     if (
       !confirm(
-        `Slette ${emails.length} kontakter permanent?\n\n` +
-          "Avmeldte bør beholdes, ikke slettes — sletting fjerner beviset på at de har reservert seg.",
+        t(`Slette ${emails.length} kontakter permanent?`, `Permanently delete ${emails.length} contacts?`) +
+          "\n\n" +
+          t(
+            "Avmeldte bør beholdes, ikke slettes — sletting fjerner beviset på at de har reservert seg.",
+            "Unsubscribed contacts should be kept, not deleted — deleting removes the proof that they opted out.",
+          ),
       )
     )
       return;
@@ -318,32 +326,32 @@ export default function ContactList({
       <section className="rounded-2xl border border-line bg-cream-2 p-6 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-extrabold text-ink">Kontakter</h2>
+            <h2 className="text-lg font-extrabold text-ink">{t("Kontakter", "Contacts")}</h2>
             <p className="mt-1 text-sm text-mute">
               {loading && contacts.length === 0 ? (
-                "Laster…"
+                t("Laster…", "Loading…")
               ) : (
                 <>
-                  {stats.count.toLocaleString("no-NO")} kontakter ·{" "}
+                  {stats.count.toLocaleString(locale)} {t("kontakter", "contacts")} ·{" "}
                   <span className="font-semibold text-ink">
-                    {stats.mailable.toLocaleString("no-NO")} kan sendes til
+                    {stats.mailable.toLocaleString(locale)} {t("kan sendes til", "can be emailed")}
                   </span>{" "}
-                  · {stats.unsubscribed.toLocaleString("no-NO")} avmeldt
-                  {stats.invalid > 0 && ` · ${stats.invalid} ugyldig`}
-                  {stats.missing > 0 && ` · ${stats.missing} borte fra Shopify`}
+                  · {stats.unsubscribed.toLocaleString(locale)} {t("avmeldt", "unsubscribed")}
+                  {stats.invalid > 0 && ` · ${stats.invalid} ${t("ugyldig", "invalid")}`}
+                  {stats.missing > 0 && ` · ${stats.missing} ${t("borte fra Shopify", "gone from Shopify")}`}
                 </>
               )}
             </p>
             {sync && (
               <p className="mt-1 text-[11px] text-mute">
                 {sync.running
-                  ? "Synkroniserer nå…"
-                  : `Sist synkronisert: ${fmtWhen(sync.lastSyncAt)}`}
+                  ? t("Synkroniserer nå…", "Syncing now…")
+                  : `${t("Sist synkronisert", "Last synced")}: ${fmtWhen(sync.lastSyncAt, locale, t("aldri", "never"))}`}
                 {sync.enabled && !sync.running && sync.nextDueAt
-                  ? ` · neste ${fmtIn(sync.nextDueAt)}`
+                  ? ` · ${t("neste", "next")} ${fmtIn(sync.nextDueAt, t)}`
                   : sync.enabled
                     ? ""
-                    : " · automatisk synk er av"}
+                    : ` · ${t("automatisk synk er av", "automatic sync is off")}`}
                 {sync.lastResult && ` · ${sync.lastResult}`}
               </p>
             )}
@@ -362,40 +370,40 @@ export default function ContactList({
             <button
               onClick={runSync}
               disabled={busy}
-              title="Henter kundene direkte fra Shopify. Nye legges til; kjente røres ikke — bortsett fra at samtykke som er trukket i Shopify også slår av her."
+              title={t("Henter kundene direkte fra Shopify. Nye legges til; kjente røres ikke — bortsett fra at samtykke som er trukket i Shopify også slår av her.", "Fetches the customers directly from Shopify. New ones are added; known ones are left alone — except that consent withdrawn in Shopify is also switched off here.")}
               className="rounded-xl bg-orange px-5 py-2.5 text-sm font-bold text-cream shadow-sm transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy ? "Jobber…" : "Hent fra Shopify"}
+              {busy ? t("Jobber…", "Working…") : t("Hent fra Shopify", "Fetch from Shopify")}
             </button>
             <button
               onClick={() => fileRef.current?.click()}
               disabled={busy}
-              title="Alternativ til Shopify-synk: last opp en CSV-eksport."
+              title={t("Alternativ til Shopify-synk: last opp en CSV-eksport.", "Alternative to the Shopify sync: upload a CSV export.")}
               className="rounded-xl border border-orange bg-cream-2 px-4 py-2.5 text-sm font-bold text-orange shadow-sm transition hover:bg-orange hover:text-cream disabled:opacity-40"
             >
-              Importer CSV
+              {t("Importer CSV", "Import CSV")}
             </button>
             <a
               href="/api/contacts/export"
               download
-              title="Last ned hele listen. Dette er sikkerhetskopien — den ligger bare på denne maskinen."
+              title={t("Last ned hele listen. Dette er sikkerhetskopien — den ligger bare på denne maskinen.", "Download the whole list. This is the backup — it only exists on this machine.")}
               className="rounded-lg bg-cream px-3 py-2.5 text-sm font-semibold text-ink/80 hover:bg-line/40"
             >
-              Last ned CSV
+              {t("Last ned CSV", "Download CSV")}
             </a>
           </div>
         </div>
 
         {importResult && (
           <div className="mt-4 rounded-xl border border-orange/30 bg-orange/10 p-4 text-sm">
-            <p className="font-bold text-ink">Ferdig — {importResult.added} nye lagt til</p>
+            <p className="font-bold text-ink">{t("Ferdig", "Done")} — {importResult.added} {t("nye lagt til", "new added")}</p>
             <ul className="mt-1 space-y-0.5 text-ink/80">
               {importResult.notes.map((n, i) => (
                 <li key={i}>{n}</li>
               ))}
             </ul>
             <a href="/logg" className="mt-2 inline-block font-semibold text-orange underline">
-              Se detaljer i loggen →
+              {t("Se detaljer i loggen →", "See details in the log →")}
             </a>
           </div>
         )}
@@ -410,13 +418,13 @@ export default function ContactList({
           <input
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
-            placeholder="ny@kunde.no"
+            placeholder={t("ny@kunde.no", "new@customer.com")}
             className="w-56 rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
           />
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="Navn (valgfritt)"
+            placeholder={t("Navn (valgfritt)", "Name (optional)")}
             className="w-48 rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
           />
           <button
@@ -424,7 +432,7 @@ export default function ContactList({
             disabled={!newEmail.trim()}
             className="rounded-lg bg-cream px-3 py-2 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
           >
-            Legg til
+            {t("Legg til", "Add")}
           </button>
           {addError && <span className="text-sm text-red-700">{addError}</span>}
         </div>
@@ -438,7 +446,7 @@ export default function ContactList({
         <input
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Søk i hele listen — e-post, navn, firma…"
+          placeholder={t("Søk i hele listen — e-post, navn, firma…", "Search the whole list — email, name, company…")}
           className="w-72 max-w-full rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
         />
         <div className="flex flex-wrap items-center gap-3">
@@ -454,13 +462,13 @@ export default function ContactList({
                 filter === f.key ? "bg-orange text-cream" : "bg-cream text-ink/70 hover:bg-line/40"
               }`}
             >
-              {f.label}
+              {t(f.no, f.en)}
             </button>
           ))}
         </div>
           <span className="shrink-0 text-sm text-mute">
-            {total.toLocaleString("no-NO")} treff
-            {search && " for søket"}
+            {total.toLocaleString(locale)} {t("treff", "results")}
+            {search && ` ${t("for søket", "for the search")}`}
           </span>
         </div>
       </div>
@@ -477,17 +485,17 @@ export default function ContactList({
                 disabled={contacts.length === 0}
                 className="h-4 w-4 accent-orange"
               />
-              Velg siden ({contacts.length})
+              {t("Velg siden", "Select page")} ({contacts.length})
             </label>
             <button
               onClick={selectAllMatching}
               disabled={busy || total === 0}
               className="rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
-              title="Velger alle som kan sendes til i hele det filtrerte utvalget, ikke bare denne siden."
+              title={t("Velger alle som kan sendes til i hele det filtrerte utvalget, ikke bare denne siden.", "Selects everyone who can be emailed in the whole filtered set, not just this page.")}
             >
-              Velg alle som kan sendes til
+              {t("Velg alle som kan sendes til", "Select all who can be emailed")}
             </button>
-            <span className="text-sm font-semibold text-ink">{selected.size} valgt</span>
+            <span className="text-sm font-semibold text-ink">{selected.size} {t("valgt", "selected")}</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -495,28 +503,28 @@ export default function ContactList({
               disabled={selected.size === 0}
               className="rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
             >
-              Sett som abonnent
+              {t("Sett som abonnent", "Mark as subscribed")}
             </button>
             <button
               onClick={() => setSubscribed(Array.from(selected), false)}
               disabled={selected.size === 0}
               className="rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
             >
-              Meld av
+              {t("Meld av", "Unsubscribe")}
             </button>
             <button
               onClick={clearSelection}
               disabled={selected.size === 0}
               className="rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
             >
-              Nullstill
+              {t("Nullstill", "Clear")}
             </button>
             <button
               onClick={removeSelected}
               disabled={selected.size === 0}
               className="rounded-lg border border-red-600 bg-red-50 px-3 py-1.5 text-sm font-bold text-red-700 transition hover:bg-red-600 hover:text-white disabled:opacity-40"
             >
-              Slett
+              {t("Slett", "Delete")}
             </button>
           </div>
         </div>
@@ -525,7 +533,7 @@ export default function ContactList({
       {/* ---- table ---- */}
       {loading && contacts.length === 0 ? (
         <p key="loading" className="text-sm text-mute">
-          Laster…
+          {t("Laster…", "Loading…")}
         </p>
       ) : contacts.length === 0 ? (
         <p
@@ -533,8 +541,8 @@ export default function ContactList({
           className="rounded-2xl border border-dashed border-line bg-cream-2 p-8 text-center text-sm text-mute"
         >
           {stats.count === 0
-            ? "Ingen kontakter ennå. Trykk «Hent fra Shopify»."
-            : "Ingen treff."}
+            ? t("Ingen kontakter ennå. Trykk «Hent fra Shopify».", "No contacts yet. Press “Fetch from Shopify”.")
+            : t("Ingen treff.", "No results.")}
         </p>
       ) : (
         <div key="table" className="overflow-hidden rounded-2xl border border-line bg-cream-2">
@@ -544,14 +552,14 @@ export default function ContactList({
           {totalPages > 1 && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-cream/60 px-4 py-2.5 text-sm">
               <span className="text-mute">
-                Viser {from}–{to} av {total.toLocaleString("no-NO")}
+                {t("Viser", "Showing")} {from}–{to} {t("av", "of")} {total.toLocaleString(locale)}
               </span>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setPage(1)}
                   disabled={page <= 1 || loading}
                   className="rounded-lg bg-cream-2 px-2.5 py-1.5 font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
-                  title="Første side"
+                  title={t("Første side", "First page")}
                 >
                   «
                 </button>
@@ -560,23 +568,23 @@ export default function ContactList({
                   disabled={page <= 1 || loading}
                   className="rounded-lg bg-cream-2 px-3 py-1.5 font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
                 >
-                  ← Forrige
+                  {t("← Forrige", "← Previous")}
                 </button>
                 <span className="font-semibold text-ink">
-                  Side {page} / {totalPages}
+                  {t("Side", "Page")} {page} / {totalPages}
                 </span>
                 <button
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={page >= totalPages || loading}
                   className="rounded-lg bg-cream-2 px-3 py-1.5 font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
                 >
-                  Neste →
+                  {t("Neste →", "Next →")}
                 </button>
                 <button
                   onClick={() => setPage(totalPages)}
                   disabled={page >= totalPages || loading}
                   className="rounded-lg bg-cream-2 px-2.5 py-1.5 font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
-                  title="Siste side"
+                  title={t("Siste side", "Last page")}
                 >
                   »
                 </button>
@@ -587,11 +595,11 @@ export default function ContactList({
             <thead className="border-b border-line text-left text-xs font-bold uppercase tracking-wide text-mute">
               <tr>
                 <th className="w-10 px-4 py-3"></th>
-                <th className="w-24 px-2 py-3">Abonnerer</th>
-                <th className="px-2 py-3">E-post</th>
-                <th className="px-2 py-3">Navn</th>
-                <th className="px-2 py-3">Firma</th>
-                <th className="px-2 py-3">Sist sendt</th>
+                <th className="w-24 px-2 py-3">{t("Abonnerer", "Subscribed")}</th>
+                <th className="px-2 py-3">{t("E-post", "Email")}</th>
+                <th className="px-2 py-3">{t("Navn", "Name")}</th>
+                <th className="px-2 py-3">{t("Firma", "Company")}</th>
+                <th className="px-2 py-3">{t("Sist sendt", "Last sent")}</th>
               </tr>
             </thead>
             <tbody>
@@ -622,14 +630,14 @@ export default function ContactList({
                           className="h-4 w-4 accent-orange disabled:opacity-40"
                           title={
                             c.invalidEmail
-                              ? "Adressen er ugyldig og kan aldri sendes til."
+                              ? t("Adressen er ugyldig og kan aldri sendes til.", "The address is invalid and can never be emailed.")
                               : c.subscribed
-                                ? "Får e-post. Fjern haken for å melde av."
-                                : "Får ikke e-post."
+                                ? t("Får e-post. Fjern haken for å melde av.", "Receives email. Uncheck to unsubscribe.")
+                                : t("Får ikke e-post.", "Does not receive email.")
                           }
                         />
                         <span className="text-[11px] font-semibold">
-                          {c.subscribed ? "Ja" : "Nei"}
+                          {c.subscribed ? t("Ja", "Yes") : t("Nei", "No")}
                         </span>
                       </label>
                     </td>
@@ -639,26 +647,26 @@ export default function ContactList({
                       </span>
                       {c.invalidEmail && (
                         <span className="ml-2 rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold text-white">
-                          UGYLDIG
+                          {t("UGYLDIG", "INVALID")}
                         </span>
                       )}
                       {c.missingInShopify && (
                         <span className="ml-2 rounded-full bg-ink/60 px-2 py-0.5 text-[10px] font-bold text-cream">
-                          BORTE
+                          {t("BORTE", "GONE")}
                         </span>
                       )}
                       {c.failureCount > 0 && (
                         <span
                           className="ml-2 text-[10px] text-red-700"
-                          title="Permanent avvist av Resend"
+                          title={t("Permanent avvist av Resend", "Permanently rejected by Resend")}
                         >
-                          {c.failureCount} avvist
+                          {c.failureCount} {t("avvist", "rejected")}
                         </span>
                       )}
                     </td>
                     <td className="px-2 py-2.5">{c.name || "—"}</td>
                     <td className="px-2 py-2.5">{c.company || "—"}</td>
-                    <td className="px-2 py-2.5 text-xs">{fmtDate(c.lastSentAt)}</td>
+                    <td className="px-2 py-2.5 text-xs">{fmtDate(c.lastSentAt, locale)}</td>
                   </tr>
                 );
               })}

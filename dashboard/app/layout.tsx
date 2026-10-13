@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LoggNavLink from "@/components/LoggNavLink";
+import LangToggle from "@/components/LangToggle";
 import PriserNavLink from "@/components/PriserNavLink";
 import { currentUser } from "@/lib/auth";
+import { LangProvider } from "@/lib/i18n";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -42,9 +44,12 @@ export default async function RootLayout({
   return (
     <html lang="no" translate="no">
       <body className="notranslate min-h-screen antialiased">
+        <LangProvider>
         <header className="sticky top-0 z-20 border-b border-line bg-cream-2/90 backdrop-blur">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
             <Logo />
+            <div className="flex items-center gap-3">
+            <LangToggle />
             {user ? (
               <nav className="flex items-center gap-1 text-sm font-semibold">
                 <Link href="/" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
@@ -53,7 +58,10 @@ export default async function RootLayout({
                 <Link href="/drops" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
                   Drops
                 </Link>
-                <Link href="/epost" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                <Link href="/picker" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                  Picker
+                </Link>
+                <Link href="/epost"className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
                   E-post
                 </Link>
                 <PriserNavLink />
@@ -69,9 +77,11 @@ export default async function RootLayout({
                 </form>
               </nav>
             ) : null}
+            </div>
           </div>
         </header>
         <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+        </LangProvider>
       </body>
     </html>
   );

@@ -3,38 +3,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { PickerProduct, ProductsResponse, RunEvent, StepEvent } from "@/lib/types";
+import { useLang } from "@/lib/i18n";
 import { freshSignal } from "@/lib/picker-order";
 
 const WINDOWS = [
-  { days: 1, label: "I dag" },
-  { days: 2, label: "Siste 2 dager" },
-  { days: 3, label: "3 dager" },
-  { days: 7, label: "7 dager" },
-  { days: 14, label: "14 dager" },
-  { days: 30, label: "30 dager" },
-  { days: 90, label: "90 dager" },
+  { days: 1, no: "I dag", en: "Today" },
+  { days: 2, no: "Siste 2 dager", en: "Last 2 days" },
+  { days: 3, no: "3 dager", en: "3 days" },
+  { days: 7, no: "7 dager", en: "7 days" },
+  { days: 14, no: "14 dager", en: "14 days" },
+  { days: 30, no: "30 dager", en: "30 days" },
+  { days: 90, no: "90 dager", en: "90 days" },
 ];
 
 const SELECT_STEPS = [
-  { key: "fetch", label: "Henter produkter" },
-  { key: "classify", label: "Klassifiserer" },
-  { key: "images", label: "Cacher bilder" },
-  { key: "pdf", label: "Bygger PDF" },
-  { key: "reels", label: "Rendrer reels" },
+  { key: "fetch", no: "Henter produkter", en: "Fetching products" },
+  { key: "classify", no: "Klassifiserer", en: "Classifying" },
+  { key: "images", no: "Cacher bilder", en: "Caching images" },
+  { key: "pdf", no: "Bygger PDF", en: "Building PDF" },
+  { key: "reels", no: "Rendrer reels", en: "Rendering reels" },
 ];
 
 type RunPhase = "idle" | "running" | "done" | "error";
 
-function fmtDate(iso: string | null): string {
+function fmtDate(iso: string | null, locale: string): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleDateString("no-NO", { day: "2-digit", month: "short" });
+    return new Date(iso).toLocaleDateString(locale, { day: "2-digit", month: "short" });
   } catch {
     return "—";
   }
 }
 
 export default function PickerPage() {
+  const { t, locale } = useLang();
   const [windowDays, setWindowDays] = useState(14);
   const [minRestock, setMinRestock] = useState(5);
   const [offersOnly, setOffersOnly] = useState(false);
@@ -89,7 +91,7 @@ export default function PickerPage() {
       refreshPoll.current = setInterval(async () => {
         if (Date.now() - started > 5 * 60_000) {
           if (refreshPoll.current) clearInterval(refreshPoll.current);
-          setRefreshNote("Oppdateringen tok for lang tid — prøv ↻ igjen.");
+          setRefreshNote(t("Oppdateringen tok for lang tid — prøv ↻ igjen.", "The refresh took too long — try ↻ again."));
           return;
         }
         try {
@@ -141,7 +143,7 @@ export default function PickerPage() {
       // screen. Keep what is on it, say what is happening, and swap the list
       // in when the fetch has actually landed.
       if (data.refreshing) {
-        setRefreshNote(data.note ?? "Henter produkter i bakgrunnen…");
+        setRefreshNote(data.note ?? t("Henter produkter i bakgrunnen…", "Fetching products in the background…"));
         // Deliberately WITHOUT `refresh` — the reload must be an ordinary
         // read. Passing opts straight through kept refresh=1 set, so the
         // reload asked for another refresh, got another "refreshing" answer,
@@ -406,14 +408,16 @@ export default function PickerPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-ink">Velg produkter</h1>
+          <h1 className="text-2xl font-extrabold text-ink">{t("Velg produkter", "Pick products")}</h1>
           <p className="mt-1 text-sm text-mute">
-            Nyeste oppdaterte produkter øverst. Kryss av dem du vil ha annonser +
-            katalog for, og trykk «Lag annonser». Ingen baseline lagres.
+            {t(
+              "Nyeste oppdaterte produkter øverst. Kryss av dem du vil ha annonser + katalog for, og trykk «Lag annonser». Ingen baseline lagres.",
+              "Most recently updated products first. Tick the ones you want ads + a catalogue for, and press “Create ads”. No baseline is saved.",
+            )}
           </p>
         </div>
         <Link href="/" className="text-sm font-semibold text-orange underline">
-          ← Tilbake
+          {t("← Tilbake", "← Back")}
         </Link>
       </div>
 
@@ -436,7 +440,7 @@ export default function PickerPage() {
                   : "bg-cream text-ink/70 hover:bg-line/40"
               }`}
             >
-              {w.label}
+              {t(w.no, w.en)}
             </button>
           ))}
           {/* Stock view: everything whose lager changed inside the window — the
@@ -448,12 +452,12 @@ export default function PickerPage() {
               setStockedOnly((v) => !v);
             }}
             disabled={loading}
-            title="Alle varer der lageret er endret i valgt tidsvindu — uavhengig av nyhet/restock-baseline"
+            title={t("Alle varer der lageret er endret i valgt tidsvindu — uavhengig av nyhet/restock-baseline", "All products whose stock changed in the selected window — regardless of the new/restock baseline")}
             className={`ml-1 rounded-lg px-3 py-1.5 text-sm font-bold transition ${
               stockedOnly ? "bg-sky-600 text-white" : "bg-sky-50 text-sky-700 hover:bg-sky-100"
             }`}
           >
-            Lagt inn på lager
+            {t("Lagt inn på lager", "Stocked in")}
           </button>
           {/* Offer view: ignores the freshness window, so products you just
               price-changed in Shopify show up even though they aren't new. */}
@@ -463,38 +467,38 @@ export default function PickerPage() {
               setOffersOnly(true);
             }}
             disabled={loading}
-            title="Alle varer med førpris (tilbud) — uavhengig av tidsvindu"
+            title={t("Alle varer med førpris (tilbud) — uavhengig av tidsvindu", "All products with a compare-at price (offers) — regardless of window")}
             className={`ml-1 rounded-lg px-3 py-1.5 text-sm font-bold transition ${
               offersOnly ? "bg-red-600 text-white" : "bg-red-50 text-red-700 hover:bg-red-100"
             }`}
           >
-            Tilbud
+            {t("Tilbud", "Offers")}
           </button>
           <button
             onClick={() => load(windowDays, minRestock, { offers: offersOnly, stocked: stockedOnly, refresh: true })}
             disabled={loading}
-            title="Hent på nytt fra Shopify (etter at du har endret priser)"
+            title={t("Hent på nytt fra Shopify (etter at du har endret priser)", "Fetch again from Shopify (after you have changed prices)")}
             className="ml-1 rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/70 transition hover:bg-line/40 disabled:opacity-40"
           >
-            ↻ Oppdater
+            {t("↻ Oppdater", "↻ Refresh")}
           </button>
         </div>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Søk tittel eller leverandør…"
+          placeholder={t("Søk tittel eller leverandør…", "Search title or vendor…")}
           className="min-w-[200px] flex-1 rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
         />
         <label className="flex items-center gap-2 text-sm text-ink/80">
           <input type="checkbox" checked={hideOos} onChange={(e) => setHideOos(e.target.checked)} className="accent-orange" />
-          Skjul utsolgt
+          {t("Skjul utsolgt", "Hide sold out")}
           {hiddenOos > 0 && (
             <span className="rounded-full bg-orange/20 px-2 py-0.5 text-xs font-bold text-orange">
-              {hiddenOos} skjult
+              {hiddenOos} {t("skjult", "hidden")}
             </span>
           )}
         </label>
-        <label className="flex items-center gap-2 text-sm text-ink/80" title="Minste antall enheter lagt inn på lager for å telle som restock (utelukker rent solgte varer)">
+        <label className="flex items-center gap-2 text-sm text-ink/80" title={t("Minste antall enheter lagt inn på lager for å telle som restock (utelukker rent solgte varer)", "Minimum units added to stock to count as a restock (excludes products that only sold)")}>
           Restock ≥
           <input
             type="number"
@@ -510,25 +514,41 @@ export default function PickerPage() {
       <p className="-mt-2 px-1 text-xs text-mute">
         {offersOnly ? (
           <>
-            Viser <span className="font-semibold text-ink">alle varer med førpris (tilbud)</span> —
-            uavhengig av tidsvindu, nyest endret først. Endret du priser i Shopify nå? Trykk{" "}
-            <span className="font-semibold text-ink">↻ Oppdater</span>.
+            {t("Viser", "Showing")}{" "}
+            <span className="font-semibold text-ink">{t("alle varer med førpris (tilbud)", "all products with a compare-at price (offers)")}</span>{" "}
+            {t(
+              "— uavhengig av tidsvindu, nyest endret først. Endret du priser i Shopify nå? Trykk",
+              "— regardless of window, most recently changed first. Just changed prices in Shopify? Press",
+            )}{" "}
+            <span className="font-semibold text-ink">{t("↻ Oppdater", "↻ Refresh")}</span>.
           </>
         ) : stockedOnly ? (
           <>
-            Viser <span className="font-semibold text-ink">alle varer der lageret er endret</span> i
-            vinduet, nyeste lagerendring først — uavhengig av om varen er ny eller finnes i
-            restock-baselinen. Her ligger varemottaket ditt, også varer som ble opprettet for uker
-            siden. <span className="font-semibold text-ink">NB:</span> et salg endrer også lageret,
-            så sjekk antallet før du velger. Nettopp lagt inn? Trykk{" "}
-            <span className="font-semibold text-ink">↻ Oppdater</span>.
+            {t("Viser", "Showing")}{" "}
+            <span className="font-semibold text-ink">{t("alle varer der lageret er endret", "all products whose stock has changed")}</span>{" "}
+            {t(
+              "i vinduet, nyeste lagerendring først — uavhengig av om varen er ny eller finnes i restock-baselinen. Her ligger varemottaket ditt, også varer som ble opprettet for uker siden.",
+              "in the window, most recent stock change first — whether or not the product is new or in the restock baseline. This is where your goods receipt lives, including products created weeks ago.",
+            )}{" "}
+            <span className="font-semibold text-ink">{t("NB:", "Note:")}</span>{" "}
+            {t(
+              "et salg endrer også lageret, så sjekk antallet før du velger. Nettopp lagt inn? Trykk",
+              "a sale also changes stock, so check the quantity before you pick. Just added stock? Press",
+            )}{" "}
+            <span className="font-semibold text-ink">{t("↻ Oppdater", "↻ Refresh")}</span>.
           </>
         ) : (
           <>
-            Viser kun <span className="font-semibold text-ink">nye</span> varer og varer{" "}
-            <span className="font-semibold text-ink">lagt inn på lager (+{minRestock} eller mer)</span> i
-            vinduet — rent solgte varer skjules. Prisendringer vises ikke her; bruk{" "}
-            <span className="font-semibold text-ink">Tilbud</span>.
+            {t("Viser kun", "Showing only")}{" "}
+            <span className="font-semibold text-ink">{t("nye", "new")}</span> {t("varer og varer", "products and products")}{" "}
+            <span className="font-semibold text-ink">
+              {t(`lagt inn på lager (+${minRestock} eller mer)`, `stocked in (+${minRestock} or more)`)}
+            </span>{" "}
+            {t(
+              "i vinduet — rent solgte varer skjules. Prisendringer vises ikke her; bruk",
+              "in the window — products that only sold are hidden. Price changes are not shown here; use",
+            )}{" "}
+            <span className="font-semibold text-ink">{t("Tilbud", "Offers")}</span>.
           </>
         )}
       </p>
@@ -537,17 +557,21 @@ export default function PickerPage() {
       <div className="rounded-2xl border border-line bg-cream-2 p-4">
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-semibold text-ink">
-            Kampanjetittel <span className="font-normal text-mute">(valgfri — vises på intro-reelen)</span>
+            {t("Kampanjetittel", "Campaign title")}{" "}
+            <span className="font-normal text-mute">{t("(valgfri — vises på intro-reelen)", "(optional — shown on the intro reel)")}</span>
           </span>
           <input
             value={campaignTitle}
             onChange={(e) => setCampaignTitle(e.target.value)}
             maxLength={60}
-            placeholder="F.eks. «Vi introduserer mange varer fra Balkan»"
+            placeholder={t("F.eks. «Vi introduserer mange varer fra Balkan»", "E.g. “We are introducing many products from the Balkans”")}
             className="w-full rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
           />
           <span className="text-[11px] text-mute">
-            La stå tom for standardteksten «Nye varer denne uken». Vises med store bokstaver.
+            {t(
+              "La stå tom for standardteksten «Nye varer denne uken». Vises med store bokstaver.",
+              "Leave empty for the default text “Nye varer denne uken” (new products this week). Shown in capitals.",
+            )}
           </span>
         </label>
 
@@ -561,11 +585,13 @@ export default function PickerPage() {
             className="mt-0.5 h-4 w-4 accent-orange"
           />
           <span className="text-sm text-ink">
-            <span className="font-semibold">Lag også slider-reel</span> (viser ALLE
-            valgte varer, 3 om gangen)
+            <span className="font-semibold">{t("Lag også slider-reel", "Also create a slider reel")}</span>{" "}
+            {t("(viser ALLE valgte varer, 3 om gangen)", "(shows ALL selected products, 3 at a time)")}
             <span className="mt-0.5 block text-[11px] text-mute">
-              Vanlig 3-vare reel lages uansett. Slideren kommer i tillegg, én per
-              kategori med mer enn 3 varer — maks 24 varer per slider (~21 sek).
+              {t(
+                "Vanlig 3-vare reel lages uansett. Slideren kommer i tillegg, én per kategori med mer enn 3 varer — maks 24 varer per slider (~21 sek).",
+                "The regular 3-product reel is always made. The slider comes in addition, one per category with more than 3 products — max 24 products per slider (~21 sec).",
+              )}
             </span>
           </span>
         </label>
@@ -575,27 +601,32 @@ export default function PickerPage() {
             selection, not from a fixed list. */}
         <label className="mt-4 flex flex-col gap-1.5 border-t border-line pt-4">
           <span className="text-sm font-semibold text-ink">
-            Opprinnelsesland på reels{" "}
-            <span className="font-normal text-mute">(valgfritt — av som standard)</span>
+            {t("Opprinnelsesland på reels", "Country of origin on reels")}{" "}
+            <span className="font-normal text-mute">{t("(valgfritt — av som standard)", "(optional — off by default)")}</span>
           </span>
           <select
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
             className="w-full max-w-sm rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
           >
-            <option value="none">Ingen — ikke vis land</option>
+            <option value="none">{t("Ingen — ikke vis land", "None — do not show country")}</option>
             <option value="auto">
-              Automatisk — kun når alle varene i reelen har samme land
+              {t("Automatisk — kun når alle varene i reelen har samme land", "Automatic — only when all products in the reel share the same country")}
             </option>
             {originChoices.map((c) => (
               <option key={c.code} value={c.code}>
-                {`Alltid «FRA ${c.name}» (${c.count} ${c.count === 1 ? "vare" : "varer"})`}
+                {t(
+                  `Alltid «FRA ${c.name}» (${c.count} ${c.count === 1 ? "vare" : "varer"})`,
+                  `Always “FRA ${c.name}” (${c.count} ${c.count === 1 ? "product" : "products"})`,
+                )}
               </option>
             ))}
           </select>
           <span className="text-[11px] text-mute">
-            Velger du et land, får ALLE reelene i denne kjøringen det flagget — også
-            varer fra et annet land. Listen viser landene i utvalget ditt.
+            {t(
+              "Velger du et land, får ALLE reelene i denne kjøringen det flagget — også varer fra et annet land. Listen viser landene i utvalget ditt.",
+              "If you pick a country, ALL reels in this run get that flag — including products from another country. The list shows the countries in your selection.",
+            )}
           </span>
         </label>
       </div>
@@ -611,10 +642,10 @@ export default function PickerPage() {
               disabled={visible.length === 0}
               className="h-4 w-4 accent-orange"
             />
-            Velg alle{visible.length > 0 ? ` (${visible.length})` : ""}
+            {t("Velg alle", "Select all")}{visible.length > 0 ? ` (${visible.length})` : ""}
           </label>
           <span className="text-sm text-mute">·</span>
-          <span className="text-sm font-semibold text-ink">{selected.size} valgt</span>
+          <span className="text-sm font-semibold text-ink">{selected.size} {t("valgt", "selected")}</span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Why the offer button is dead, said out loud.
@@ -627,34 +658,34 @@ export default function PickerPage() {
               Now it says what is missing and where the offers actually live. */}
           {selected.size > 0 && selectedOffers === 0 && (
             <span className="text-xs text-mute">
-              Ingen av de valgte varene har førpris —{" "}
+              {t("Ingen av de valgte varene har førpris —", "None of the selected products has a compare-at price —")}{" "}
               <button
                 type="button"
                 onClick={() => { setStockedOnly(false); setOffersOnly(true); }}
                 className="font-semibold text-red-700 underline underline-offset-2"
               >
-                bytt til Tilbud
+                {t("bytt til Tilbud", "switch to Offers")}
               </button>{" "}
-              for å lage en tilbudsannonse.
+              {t("for å lage en tilbudsannonse.", "to create an offer ad.")}
             </span>
           )}
           <button onClick={clearSelection} disabled={selected.size === 0} className="rounded-lg bg-cream px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40">
-            Nullstill
+            {t("Nullstill", "Clear")}
           </button>
           <button
             onClick={() => startRender("tilbud")}
             disabled={selectedOffers === 0 || running}
-            title={selectedOffers === 0 ? "Velg minst ett produkt med tilbud (førpris)" : `${selectedOffers} tilbud valgt`}
+            title={selectedOffers === 0 ? t("Velg minst ett produkt med tilbud (førpris)", "Pick at least one product with an offer (compare-at price)") : t(`${selectedOffers} tilbud valgt`, `${selectedOffers} offers selected`)}
             className="rounded-xl border border-red-600 bg-red-50 px-4 py-2 text-sm font-bold text-red-700 shadow-sm transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {running ? "Lager…" : `Lag tilbud annonse${selectedOffers > 0 ? ` (${selectedOffers})` : ""}`}
+            {running ? t("Lager…", "Creating…") : `${t("Lag tilbud annonse", "Create offer ad")}${selectedOffers > 0 ? ` (${selectedOffers})` : ""}`}
           </button>
           <button
             onClick={() => startRender("full")}
             disabled={selected.size === 0 || running}
             className="rounded-xl bg-orange px-5 py-2 text-sm font-bold text-cream shadow-sm transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {running ? "Lager…" : `Lag annonser + katalog (${selected.size})`}
+            {running ? t("Lager…", "Creating…") : `${t("Lag annonser + katalog", "Create ads + catalogue")} (${selected.size})`}
           </button>
         </div>
       </div>
@@ -672,17 +703,17 @@ export default function PickerPage() {
                   <span className={`grid h-6 w-6 place-items-center rounded-full border ${st === "done" ? "border-orange bg-orange text-cream" : st === "active" ? "border-orange text-orange" : "border-line text-mute/50"}`}>
                     {icon}
                   </span>
-                  {s.label}
+                  {t(s.no, s.en)}
                 </li>
               );
             })}
           </ol>
           {phase === "done" && result && (
             <div className="mt-4 rounded-xl border border-orange/30 bg-orange/10 p-3 text-sm">
-              <p className="font-bold text-ink">Ferdig — {result.assets} filer</p>
+              <p className="font-bold text-ink">{t("Ferdig", "Done")} — {result.assets} {t("filer", "files")}</p>
               {result.drop && (
                 <Link href={`/drops?open=${result.drop}`} className="mt-1 inline-block font-semibold text-orange underline">
-                  Åpne {result.drop} →
+                  {t("Åpne", "Open")} {result.drop} →
                 </Link>
               )}
             </div>
@@ -714,9 +745,12 @@ export default function PickerPage() {
       {loading ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-line bg-cream-2 p-10 text-center">
           <span className="h-6 w-6 animate-spin rounded-full border-2 border-orange border-t-transparent" />
-          <p className="text-sm font-semibold text-ink">Henter produkter fra Shopify…</p>
+          <p className="text-sm font-semibold text-ink">{t("Henter produkter fra Shopify…", "Fetching products from Shopify…")}</p>
           <p className="text-xs text-mute">
-            Kun første lasting tar ~20–30 sek. Etterpå er alle tidsvinduene lynraske (mellomlagret i 5 min).
+            {t(
+              "Kun første lasting tar ~20–30 sek. Etterpå er alle tidsvinduene lynraske (mellomlagret i 5 min).",
+              "Only the first load takes ~20–30 sec. After that all the time windows are lightning fast (cached for 5 min).",
+            )}
           </p>
         </div>
       ) : loadError ? (
@@ -728,21 +762,24 @@ export default function PickerPage() {
           {hiddenOos > 0 ? (
             <>
               <p className="font-semibold text-ink">
-                {hiddenOos} {offersOnly ? "tilbud" : "varer"} er skjult fordi de er utsolgt.
+                {t(
+                  `${hiddenOos} ${offersOnly ? "tilbud" : "varer"} er skjult fordi de er utsolgt.`,
+                  `${hiddenOos} ${offersOnly ? "offers are" : "products are"} hidden because they are sold out.`,
+                )}
               </p>
               <button
                 onClick={() => setHideOos(false)}
                 className="mt-3 rounded-lg bg-orange px-4 py-2 text-sm font-bold text-cream"
               >
-                Vis utsolgte også
+                {t("Vis utsolgte også", "Show sold out too")}
               </button>
             </>
           ) : offersOnly ? (
-            <p>Ingen varer med førpris. Sett «Compare-at price» i Shopify, og trykk ↻ Oppdater.</p>
+            <p>{t("Ingen varer med førpris. Sett «Compare-at price» i Shopify, og trykk ↻ Oppdater.", "No products with a compare-at price. Set “Compare-at price” in Shopify, then press ↻ Refresh.")}</p>
           ) : stockedOnly ? (
-            <p>Ingen lagerendringer i dette vinduet. Prøv et lengre vindu, eller trykk ↻ Oppdater hvis du nettopp la inn varer.</p>
+            <p>{t("Ingen lagerendringer i dette vinduet. Prøv et lengre vindu, eller trykk ↻ Oppdater hvis du nettopp la inn varer.", "No stock changes in this window. Try a longer window, or press ↻ Refresh if you just added products.")}</p>
           ) : (
-            <p>Ingen produkter i dette vinduet.</p>
+            <p>{t("Ingen produkter i dette vinduet.", "No products in this window.")}</p>
           )}
         </div>
       ) : (
@@ -763,7 +800,7 @@ export default function PickerPage() {
                 </span>
                 <span className="absolute right-2 top-2 z-10 flex flex-col items-end gap-1">
                   {p.is_offer && (
-                    <span className="rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold text-white">TILBUD</span>
+                    <span className="rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold text-white">{t("TILBUD", "OFFER")}</span>
                   )}
                   {sig && (
                     <span
@@ -771,7 +808,7 @@ export default function PickerPage() {
                         sig.kind === "nyhet" ? "bg-emerald-600 text-white" : "bg-sky-600 text-white"
                       }`}
                     >
-                      {sig.text}
+                      {sig.kind === "nyhet" ? t("NYHET", "NEW") : t(sig.text, sig.text.replace(/ inn$/, " in"))}
                     </span>
                   )}
                 </span>
@@ -780,7 +817,7 @@ export default function PickerPage() {
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={p.image_url} alt={p.title} loading="lazy" className="h-full w-full object-contain p-2" />
                   ) : (
-                    <div className="grid h-full place-items-center text-xs text-mute/50">ingen bilde</div>
+                    <div className="grid h-full place-items-center text-xs text-mute/50">{t("ingen bilde", "no image")}</div>
                   )}
                 </div>
                 <div className="flex flex-1 flex-col gap-1 p-3">
@@ -789,15 +826,15 @@ export default function PickerPage() {
                   <div className="mt-auto flex items-center justify-between pt-1 text-xs">
                     <span className="font-bold text-ink">{p.price_label}</span>
                     <span className={p.in_stock ? "text-mute" : "font-semibold text-red-600"}>
-                      {p.in_stock ? `${p.inventory_quantity} stk` : "utsolgt"}
+                      {p.in_stock ? `${p.inventory_quantity} ${t("stk", "pcs")}` : t("utsolgt", "sold out")}
                     </span>
                   </div>
                   <p className="text-[10px] text-mute/70">
                     {/* In the stock view the lager date IS the sort key, so show
                         it on every card — «lagt til» would be the wrong date. */}
                     {stockedOnly || sig?.kind === "restock"
-                      ? `lager oppd. ${fmtDate(p.inventory_updated_at)}`
-                      : `lagt til ${fmtDate(p.created_at)}`}
+                      ? `${t("lager oppd.", "stock upd.")} ${fmtDate(p.inventory_updated_at, locale)}`
+                      : `${t("lagt til", "added")} ${fmtDate(p.created_at, locale)}`}
                   </p>
                 </div>
               </button>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLang } from "@/lib/i18n";
 import { readSseStream } from "@/lib/sse";
 import type { DropSummary, RunEvent } from "@/lib/types";
 
@@ -16,6 +17,7 @@ export default function CampaignComposer({
   dryRun: boolean;
   onSent?: () => void;
 }) {
+  const { t } = useLang();
   const [subject, setSubject] = useState("");
   const [headline, setHeadline] = useState("");
   const [body, setBody] = useState("");
@@ -164,7 +166,7 @@ export default function CampaignComposer({
   } as const;
 
   const ZOOM_LEVELS: { value: "fit" | number; label: string }[] = [
-    { value: "fit", label: "Tilpass" },
+    { value: "fit", label: t("Tilpass", "Fit") },
     { value: 0.5, label: "50 %" },
     { value: 0.65, label: "65 %" },
     { value: 0.8, label: "80 %" },
@@ -206,8 +208,14 @@ export default function CampaignComposer({
       setTestState({
         ok: true,
         msg: data.dryRun
-          ? "Testmodus — ingenting ble faktisk sendt. Sjekk innholdet i forhåndsvisningen."
-          : `Sendt til ${testTo}${data.attached ? ` med vedlegg (${data.attachmentKb} kB)` : ""}. Åpne innboksen og se over før du sender til alle.`,
+          ? t(
+              "Testmodus — ingenting ble faktisk sendt. Sjekk innholdet i forhåndsvisningen.",
+              "Test mode — nothing was actually sent. Check the content in the preview.",
+            )
+          : t(
+              `Sendt til ${testTo}${data.attached ? ` med vedlegg (${data.attachmentKb} kB)` : ""}. Åpne innboksen og se over før du sender til alle.`,
+              `Sent to ${testTo}${data.attached ? ` with attachment (${data.attachmentKb} kB)` : ""}. Open the inbox and review it before sending to everyone.`,
+            ),
       });
     } catch (err) {
       setTestState({ ok: false, msg: String((err as Error).message) });
@@ -218,8 +226,11 @@ export default function CampaignComposer({
 
   async function send() {
     if (recipients.length === 0) return;
-    const label = dryRun ? "TESTMODUS — ingenting sendes." : `Dette sender e-post til ${recipients.length} kunder.`;
-    if (!confirm(`${label}\n\nEmne: ${subject}\nVedlegg: ${attach && dropDir ? `katalog-${dropDir}.pdf` : "ingen"}\n\nFortsette?`)) return;
+    const label = dryRun
+      ? t("TESTMODUS — ingenting sendes.", "TEST MODE — nothing is sent.")
+      : t(`Dette sender e-post til ${recipients.length} kunder.`, `This sends email to ${recipients.length} customers.`);
+    const attachment = attach && dropDir ? `katalog-${dropDir}.pdf` : t("ingen", "none");
+    if (!confirm(`${label}\n\n${t("Emne", "Subject")}: ${subject}\n${t("Vedlegg", "Attachment")}: ${attachment}\n\n${t("Fortsette?", "Continue?")}`)) return;
 
     setPhase("sending");
     setLogs([]);
@@ -245,7 +256,12 @@ export default function CampaignComposer({
       const started = await res.json();
       if (!res.ok || started.error) throw new Error(started.error ?? "kunne ikke starte");
 
-      pushLog(`Kampanje ${started.campaignId} startet — ${started.total} mottakere.`);
+      pushLog(
+        t(
+          `Kampanje ${started.campaignId} startet — ${started.total} mottakere.`,
+          `Campaign ${started.campaignId} started — ${started.total} recipients.`,
+        ),
+      );
 
       // Watching is separate from sending: this stream can drop, or the tab can
       // close, and the campaign carries on regardless.
@@ -294,44 +310,48 @@ export default function CampaignComposer({
     <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
       {dryRun && (
         <div className="rounded-2xl border border-amber/40 bg-amber/10 p-4 text-sm text-ink lg:col-span-2">
-          <p className="font-bold">Testmodus er på</p>
+          <p className="font-bold">{t("Testmodus er på", "Test mode is on")}</p>
           <p className="mt-0.5 text-ink/80">
-            Ingen e-post sendes til noen. Alt annet kjører som normalt, så du kan øve deg på hele flyten. Skru av med 
-            <code className="font-mono text-xs">EMAIL_DRY_RUN=0</code> i{" "}
-            <code className="font-mono text-xs">dashboard/.env.local</code> når domenet er verifisert.
+            {t(
+              "Ingen e-post sendes til noen. Alt annet kjører som normalt, så du kan øve deg på hele flyten. Skru av med",
+              "No email is sent to anyone. Everything else runs as normal, so you can practise the whole flow. Turn it off with",
+            )}{" "}
+            <code className="font-mono text-xs">EMAIL_DRY_RUN=0</code> {t("i", "in")}{" "}
+            <code className="font-mono text-xs">dashboard/.env.local</code>{" "}
+            {t("når domenet er verifisert.", "once the domain is verified.")}
           </p>
         </div>
       )}
 
       <section className="rounded-2xl border border-line bg-cream-2 p-6 shadow-sm">
-        <h2 className="text-lg font-extrabold text-ink">Ny kampanje</h2>
+        <h2 className="text-lg font-extrabold text-ink">{t("Ny kampanje", "New campaign")}</h2>
         <p className="mt-1 text-sm text-mute">
           {recipients.length === 0
-            ? "Velg mottakere i kontaktlisten under."
-            : `${recipients.length} mottakere valgt.`}
+            ? t("Velg mottakere i kontaktlisten under.", "Pick recipients in the contact list below.")
+            : t(`${recipients.length} mottakere valgt.`, `${recipients.length} recipients selected.`)}
         </p>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <label className="block">
-            <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">Emne</span>
+            <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">{t("Emne", "Subject")}</span>
             <input
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               maxLength={120}
-              placeholder="Nye varer inne denne uken"
+              placeholder={t("Nye varer inne denne uken", "New products in this week")}
               className={input}
               disabled={sending}
             />
           </label>
           <label className="block">
             <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">
-              Forhåndstekst
+              {t("Forhåndstekst", "Preheader")}
             </span>
             <input
               value={preheader}
               onChange={(e) => setPreheader(e.target.value)}
               maxLength={120}
-              placeholder="Vises ved siden av emnet i innboksen"
+              placeholder={t("Vises ved siden av emnet i innboksen", "Shown next to the subject in the inbox")}
               className={input}
               disabled={sending}
             />
@@ -340,44 +360,46 @@ export default function CampaignComposer({
 
         <label className="mt-3 block">
           <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">
-            Overskrift i e-posten
+            {t("Overskrift i e-posten", "Headline in the email")}
           </span>
           <input
             value={headline}
             onChange={(e) => setHeadline(e.target.value)}
             maxLength={120}
-            placeholder="Samme som emnet hvis tom"
+            placeholder={t("Samme som emnet hvis tom", "Same as the subject if empty")}
             className={input}
             disabled={sending}
           />
         </label>
 
         <label className="mt-3 block">
-          <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">Melding</span>
+          <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">{t("Melding", "Message")}</span>
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={8}
-            placeholder={"Hei!\n\nDenne uken har vi fått inn …\n\nMed vennlig hilsen\nNordic Engros"}
+            placeholder={t("Hei!\n\nDenne uken har vi fått inn …\n\nMed vennlig hilsen\nNordic Engros", "Hi!\n\nThis week we have received …\n\nKind regards\nNordic Engros")}
             className={`${input} font-normal leading-relaxed`}
             disabled={sending}
           />
           <span className="mt-1 block text-[11px] text-mute">
-            Tom linje mellom avsnitt. Ingen formatering — hold det enkelt, det er best for
-            leveringen.
+            {t(
+              "Tom linje mellom avsnitt. Ingen formatering — hold det enkelt, det er best for leveringen.",
+              "Blank line between paragraphs. No formatting — keep it simple, it is best for deliverability.",
+            )}
           </span>
         </label>
 
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">
-              Knapp — lenke
+              {t("Knapp — lenke", "Button — link")}
             </span>
             <input value={ctaUrl} onChange={(e) => setCtaUrl(e.target.value)} className={input} disabled={sending} />
           </label>
           <label className="block">
             <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-mute">
-              Knapp — tekst
+              {t("Knapp — tekst", "Button — text")}
             </span>
             <input value={ctaLabel} onChange={(e) => setCtaLabel(e.target.value)} className={input} disabled={sending} />
           </label>
@@ -393,11 +415,13 @@ export default function CampaignComposer({
               className="accent-orange"
               disabled={sending || drops.length === 0}
             />
-            <span className="font-semibold text-ink">Legg ved katalogen som PDF</span>
+            <span className="font-semibold text-ink">{t("Legg ved katalogen som PDF", "Attach the catalogue as PDF")}</span>
           </label>
           <p className="mt-1 text-[11px] text-mute">
-            Uten hake sendes bare lenken, som er best for leveringen — et stort vedlegg til hele
-            listen er i seg selv et spamsignal. Med hake får kunden filen rett i innboksen.
+            {t(
+              "Uten hake sendes bare lenken, som er best for leveringen — et stort vedlegg til hele listen er i seg selv et spamsignal. Med hake får kunden filen rett i innboksen.",
+              "Unchecked, only the link is sent, which is best for deliverability — a large attachment to the whole list is itself a spam signal. Checked, the customer gets the file straight in their inbox.",
+            )}
           </p>
           {attach && (
             <select
@@ -414,21 +438,21 @@ export default function CampaignComposer({
             </select>
           )}
           {drops.length === 0 && (
-            <p className="mt-2 text-[11px] text-mute">Ingen drops med PDF ennå.</p>
+            <p className="mt-2 text-[11px] text-mute">{t("Ingen drops med PDF ennå.", "No drops with a PDF yet.")}</p>
           )}
         </div>
 
         {/* ---- test send ---- */}
         <div className="mt-4 rounded-xl border border-orange/25 bg-orange/5 p-4">
-          <p className="text-sm font-bold text-ink">Send en test til deg selv (valgfritt)</p>
+          <p className="text-sm font-bold text-ink">{t("Send en test til deg selv (valgfritt)", "Send a test to yourself (optional)")}</p>
           <p className="mt-0.5 text-[11px] text-mute">
-            Anbefalt, men ikke påkrevd — du kan sende kampanjen uten.
+            {t("Anbefalt, men ikke påkrevd — du kan sende kampanjen uten.", "Recommended but not required — you can send the campaign without it.")}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
               value={testTo}
               onChange={(e) => setTestTo(e.target.value)}
-              placeholder="din@epost.no"
+              placeholder={t("din@epost.no", "you@email.com")}
               className="w-56 rounded-lg border border-line bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-orange"
               disabled={sending}
             />
@@ -437,9 +461,9 @@ export default function CampaignComposer({
               disabled={testing || !testTo.trim() || !subject.trim() || sending}
               className="rounded-lg bg-cream px-3 py-2 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
             >
-              {testing ? "Sender…" : "Send test"}
+              {testing ? t("Sender…", "Sending…") : t("Send test", "Send test")}
             </button>
-            {tested && <span className="text-sm font-semibold text-ink">✓ testet</span>}
+            {tested && <span className="text-sm font-semibold text-ink">{t("✓ testet", "✓ tested")}</span>}
           </div>
           {testState && (
             <p className={`mt-2 text-sm ${testState.ok ? "text-ink/80" : "text-red-700"}`}>
@@ -455,14 +479,14 @@ export default function CampaignComposer({
             disabled={!canSend}
             title={
               recipients.length === 0
-                ? "Velg minst én mottaker i kontaktlisten"
+                ? t("Velg minst én mottaker i kontaktlisten", "Pick at least one recipient in the contact list")
                 : !subject.trim()
-                  ? "Emnefeltet må fylles ut"
-                  : `Send til ${recipients.length} mottakere`
+                  ? t("Emnefeltet må fylles ut", "The subject field must be filled in")
+                  : t(`Send til ${recipients.length} mottakere`, `Send to ${recipients.length} recipients`)
             }
             className="rounded-xl bg-orange px-5 py-2.5 text-sm font-bold text-cream shadow-sm transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {sending ? "Sender…" : `Send kampanje (${recipients.length})`}
+            {sending ? t("Sender…", "Sending…") : t(`Send kampanje (${recipients.length})`, `Send campaign (${recipients.length})`)}
           </button>
         </div>
 
@@ -471,9 +495,9 @@ export default function CampaignComposer({
           <div className="mt-5">
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="font-semibold text-ink">
-                {counts.sent} sendt
-                {counts.failed > 0 && ` · ${counts.failed} feilet`}
-                {counts.skipped > 0 && ` · ${counts.skipped} hoppet over`} av {counts.total}
+                {counts.sent} {t("sendt", "sent")}
+                {counts.failed > 0 && ` · ${counts.failed} ${t("feilet", "failed")}`}
+                {counts.skipped > 0 && ` · ${counts.skipped} ${t("hoppet over", "skipped")}`} {t("av", "of")} {counts.total}
               </span>
               <span className="text-mute">{pct}%</span>
             </div>
@@ -487,9 +511,9 @@ export default function CampaignComposer({
             {phase === "done" && (
               <div className="mt-4 rounded-xl border border-orange/30 bg-orange/10 p-4 text-sm">
                 <p className="font-bold text-ink">
-                  Ferdig — {counts.sent} sendt
-                  {counts.failed > 0 && `, ${counts.failed} feilet`}
-                  {dryRun && " (testmodus, ingenting gikk ut)"}
+                  {t("Ferdig", "Done")} — {counts.sent} {t("sendt", "sent")}
+                  {counts.failed > 0 && `, ${counts.failed} ${t("feilet", "failed")}`}
+                  {dryRun && ` ${t("(testmodus, ingenting gikk ut)", "(test mode, nothing went out)")}`}
                 </p>
               </div>
             )}
@@ -517,9 +541,9 @@ export default function CampaignComposer({
       <section className="rounded-2xl border border-line bg-cream-2 p-6 shadow-sm lg:sticky lg:top-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-extrabold text-ink">Forhåndsvisning</h2>
+            <h2 className="text-lg font-extrabold text-ink">{t("Forhåndsvisning", "Preview")}</h2>
             <p className="mt-1 text-sm text-mute">
-              Slik ser e-posten ut hos mottakeren. Oppdateres mens du skriver.
+              {t("Slik ser e-posten ut hos mottakeren. Oppdateres mens du skriver.", "This is how the email looks to the recipient. Updates as you type.")}
             </p>
           </div>
           {previewHtml && (
@@ -530,7 +554,7 @@ export default function CampaignComposer({
                 onChange={(e) =>
                   setZoom(e.target.value === "fit" ? "fit" : Number(e.target.value))
                 }
-                title="«Tilpass» krymper til hele e-posten er synlig. En fast prosent viser den i den størrelsen — panelet ruller hvis den er høyere."
+                title={t("«Tilpass» krymper til hele e-posten er synlig. En fast prosent viser den i den størrelsen — panelet ruller hvis den er høyere.", "“Fit” shrinks until the whole email is visible. A fixed percentage shows it at that size — the panel scrolls if it is taller.")}
                 className="rounded-lg border border-line bg-cream px-2 py-1 text-sm font-semibold text-ink outline-none focus:border-orange"
               >
                 {ZOOM_LEVELS.map((z) => (
@@ -563,7 +587,7 @@ export default function CampaignComposer({
               <iframe
                 ref={iframeRef}
                 onLoad={measurePreview}
-                title="Forhåndsvisning"
+                title={t("Forhåndsvisning", "Preview")}
                 srcDoc={previewHtml}
                 // allow-same-origin (and nothing else) so the height can be
                 // measured. Scripts stay blocked, and every value the operator
@@ -592,7 +616,7 @@ export default function CampaignComposer({
             className="mt-4 grid place-items-center rounded-xl border border-dashed border-line bg-cream text-sm text-mute"
             style={{ height: previewBoxHeight }}
           >
-            Skriv en melding for å se den her.
+            {t("Skriv en melding for å se den her.", "Write a message to see it here.")}
           </p>
         )}
       </section>
