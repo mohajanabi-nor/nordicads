@@ -9,6 +9,7 @@
 import { unsubscribeUrl } from "@/lib/campaign-shared";
 import { createCampaign, newCampaignId, type CampaignManifest } from "@/lib/campaign-store";
 import { isValidEmail, mailableEmails, normalizeEmail } from "@/lib/contacts";
+import { loadUploadAttachment, uploadMarker } from "@/lib/campaign-upload";
 import { readDropFile } from "@/lib/drops";
 import { renderCampaign } from "@/lib/email-template";
 import { configProblems, isDryRun, type Attachment } from "@/lib/resend";
@@ -33,6 +34,9 @@ export async function POST(req: Request) {
       preheader?: string;
       dropDir?: string | null;
       attach?: boolean;
+      /** A PDF the operator uploaded from their device, instead of a drop. */
+      uploadId?: string | null;
+      uploadName?: string | null;
     };
 
     const problems = configProblems();
@@ -71,7 +75,17 @@ export async function POST(req: Request) {
     }
 
     let attachment: Attachment | null = null;
-    if (body.attach && body.dropDir) {
+    // Recorded on the manifest in place of a drop name, so a resume re-reads
+    // the same uploaded file.
+    let attachmentSource: string | null = body.dropDir ?? null;
+    if (body.attach && body.uploadId) {
+      const loaded = await loadUploadAttachment(body.uploadId, body.uploadName);
+      if ("error" in loaded) {
+        return Response.json({ error: loaded.error }, { status: loaded.status });
+      }
+      attachment = loaded.attachment;
+      attachmentSource = uploadMarker(body.uploadId);
+    } else if (body.attach && body.dropDir) {
       const pdf = await readDropFile(body.dropDir, "katalog.pdf");
       if (!pdf) {
         return Response.json({ error: `fant ingen katalog.pdf i ${body.dropDir}` }, { status: 400 });
@@ -103,7 +117,7 @@ export async function POST(req: Request) {
       html,
       text,
       recipients,
-      dropDir: body.dropDir ?? null,
+      dropDir: attachment ? attachmentSource : (body.dropDir ?? null),
       attachmentName: attachment?.filename ?? null,
       dryRun: isDryRun(),
     };

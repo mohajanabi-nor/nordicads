@@ -133,3 +133,21 @@ export async function downloadObject(bucket: string, objectPath: string): Promis
 export async function removeObject(bucket: string, objectPath: string): Promise<void> {
   await storageFetch(`/object/${bucket}/${encodePath(objectPath)}`, { method: "DELETE" });
 }
+
+/**
+ * A one-shot URL the BROWSER can PUT a file to, straight into the bucket.
+ *
+ * Used for files too big to pass through a serverless function (Vercel caps a
+ * request body at 4.5 MB). The server only decides the path and signs it; the
+ * bytes never travel through here.
+ */
+export async function createSignedUploadUrl(bucket: string, objectPath: string): Promise<string> {
+  const res = await storageFetch(`/object/upload/sign/${bucket}/${encodePath(objectPath)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-upsert": "true" },
+    body: "{}",
+  });
+  const { url } = (await res.json()) as { url: string };
+  const cfg = supabaseConfig();
+  return `${cfg.url}/storage/v1${url.startsWith("/") ? "" : "/"}${url}`;
+}

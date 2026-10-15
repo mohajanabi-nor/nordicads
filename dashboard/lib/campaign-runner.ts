@@ -34,6 +34,7 @@ import {
   type CampaignManifest,
 } from "./campaign-store";
 import { readDropFile } from "./drops";
+import { readUpload, uploadIdFromDropDir } from "./campaign-upload";
 import { clearAppState, getAppState, setAppState } from "./app-state";
 import { sbRpc, sbSelect } from "./supabase";
 
@@ -227,9 +228,14 @@ async function sendLoop(
   // byte-identical to what the first recipients received.
   let attachment: Attachment | null = null;
   if (manifest.attachmentName && manifest.dropDir) {
-    const pdf = await readDropFile(manifest.dropDir, "katalog.pdf");
+    const uploadId = uploadIdFromDropDir(manifest.dropDir);
+    const pdf = uploadId
+      ? await readUpload(uploadId)
+      : await readDropFile(manifest.dropDir, "katalog.pdf");
     if (!pdf) {
-      const message = `katalog.pdf mangler i ${manifest.dropDir} — kan ikke sende med vedlegg`;
+      const message = uploadId
+        ? `det opplastede vedlegget mangler (${manifest.attachmentName}) — kan ikke sende med vedlegg`
+        : `katalog.pdf mangler i ${manifest.dropDir} — kan ikke sende med vedlegg`;
       await logError("campaign", "campaign.attachmentMissing", message, {
         campaignId: manifest.id,
       });

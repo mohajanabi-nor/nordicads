@@ -28,6 +28,13 @@ export default function CampaignComposer({
   const [drops, setDrops] = useState<DropSummary[]>([]);
   const [dropDir, setDropDir] = useState("");
   const [attach, setAttach] = useState(false);
+  // Where the attachment comes from: a generated drop catalogue, or a PDF picked
+  // from this device (uploaded straight to storage, see /api/campaign/upload).
+  const [attachSource, setAttachSource] = useState<"drop" | "upload">("drop");
+  const [upload, setUpload] = useState<{ id: string; name: string; size: number } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const [previewHtml, setPreviewHtml] = useState("");
   // Preview zoom. The email is 600px wide and usually far taller than the panel,
@@ -57,7 +64,56 @@ export default function CampaignComposer({
   const logRef = useRef<HTMLDivElement>(null);
 
   /** Identity of the current message — changing any of it re-locks the send. */
-  const contentKey = JSON.stringify({ subject, headline, body, ctaUrl, ctaLabel, attach, dropDir });
+  const contentKey = JSON.stringify({
+    subject, headline, body, ctaUrl, ctaLabel, attach, attachSource, dropDir, upload: upload?.id,
+  });
+
+  /** Name shown in the email and the confirm dialog; null when nothing is attached. */
+  const attachmentName = !attach
+    ? null
+    : attachSource === "upload"
+      ? (upload?.name ?? null)
+      : dropDir
+        ? `katalog-${dropDir}.pdf`
+        : null;
+  /** The attachment fields every endpoint takes. */
+  const attachFields = () => ({
+    attach: attachmentName !== null,
+    dropDir: attach && attachSource === "drop" ? dropDir : null,
+    uploadId: attach && attachSource === "upload" ? (upload?.id ?? null) : null,
+    uploadName: attach && attachSource === "upload" ? (upload?.name ?? null) : null,
+  });
+
+  async function pickFile(file: File) {
+    setUploadError(null);
+    if (!/\.pdf$/i.test(file.name)) {
+      setUploadError(t("Bare PDF-filer kan legges ved.", "Only PDF files can be attached."));
+      return;
+    }
+    setUploading(true);
+    try {
+      const res = await fetch("/api/campaign/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, size: file.size }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "kunne ikke laste opp");
+      const put = await fetch(data.url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/pdf" },
+        body: file,
+      });
+      if (!put.ok) throw new Error(`opplasting feilet (${put.status})`);
+      setUpload({ id: data.uploadId, name: data.filename, size: file.size });
+    } catch (err) {
+      setUpload(null);
+      setUploadError(String((err as Error).message));
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   useEffect(() => {
     fetch("/api/drops")
@@ -82,7 +138,7 @@ export default function CampaignComposer({
           ctaUrl,
           ctaLabel,
           preheader,
-          attachmentName: attach && dropDir ? `katalog-${dropDir}.pdf` : null,
+          attachmentName,
         }),
       });
       const data = await res.json();
@@ -90,7 +146,8 @@ export default function CampaignComposer({
     } catch {
       /* preview is cosmetic — never surface a failure here */
     }
-  }, [headline, subject, body, ctaUrl, ctaLabel, preheader, attach, dropDir]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headline, subject, body, ctaUrl, ctaLabel, preheader, attachmentName]);
 
   useEffect(() => {
     const t = setTimeout(refreshPreview, 350); // debounce while typing
@@ -195,8 +252,7 @@ export default function CampaignComposer({
           ctaUrl,
           ctaLabel,
           preheader,
-          dropDir: attach ? dropDir : null,
-          attach,
+          ...attachFields(),
         }),
       });
       const data = await res.json();
@@ -229,7 +285,7 @@ export default function CampaignComposer({
     const label = dryRun
       ? t("TESTMODUS — ingenting sendes.", "TEST MODE — nothing is sent.")
       : t(`Dette sender e-post til ${recipients.length} kunder.`, `This sends email to ${recipients.length} customers.`);
-    const attachment = attach && dropDir ? `katalog-${dropDir}.pdf` : t("ingen", "none");
+    const attachment = attachmentName ?? t("ingen", "none");
     if (!confirm(`${label}\n\n${t("Emne", "Subject")}: ${subject}\n${t("Vedlegg", "Attachment")}: ${attachment}\n\n${t("Fortsette?", "Continue?")}`)) return;
 
     setPhase("sending");
@@ -249,8 +305,7 @@ export default function CampaignComposer({
           ctaUrl,
           ctaLabel,
           preheader,
-          dropDir: attach ? dropDir : null,
-          attach,
+          ...attachFields(),
         }),
       });
       const started = await res.json();
@@ -297,7 +352,10 @@ export default function CampaignComposer({
 
   const sending = phase === "sending";
   const tested = testedKey === contentKey;
-  const canSend = recipients.length > 0 && subject.trim() !== "" && !sending;
+  // Ticked "attach" but nothing to attach yet: sending would silently go out
+  // without the file, so hold it back until the upload is there.
+  const attachmentPending = attach && attachmentName === null;
+  const canSend = recipients.length > 0 && subject.trim() !== "" && !sending && !uploading && !attachmentPending;
   const pct = counts.total ? Math.round(((counts.sent + counts.failed + counts.skipped) / counts.total) * 100) : 0;
 
   const input =
@@ -413,9 +471,9 @@ export default function CampaignComposer({
               checked={attach}
               onChange={(e) => setAttach(e.target.checked)}
               className="accent-orange"
-              disabled={sending || drops.length === 0}
+              disabled={sending}
             />
-            <span className="font-semibold text-ink">{t("Legg ved katalogen som PDF", "Attach the catalogue as PDF")}</span>
+            <span className="font-semibold text-ink">{t("Legg ved en PDF", "Attach a PDF")}</span>
           </label>
           <p className="mt-1 text-[11px] text-mute">
             {t(
@@ -424,6 +482,65 @@ export default function CampaignComposer({
             )}
           </p>
           {attach && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {(
+                [
+                  ["drop", t("Katalog fra drop", "Catalogue from a drop")],
+                  ["upload", t("PDF fra min enhet", "PDF from my device")],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setAttachSource(key)}
+                  disabled={sending}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${
+                    attachSource === key ? "bg-orange text-cream" : "bg-cream-2 text-ink/70 hover:bg-line/40"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {attach && attachSource === "upload" && (
+            <div className="mt-2">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) pickFile(f);
+                }}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={sending || uploading}
+                  className="rounded-lg bg-cream-2 px-3 py-1.5 text-sm font-semibold text-ink/80 hover:bg-line/40 disabled:opacity-40"
+                >
+                  {uploading
+                    ? t("Laster opp…", "Uploading…")
+                    : upload
+                      ? t("Bytt PDF", "Change PDF")
+                      : t("Velg PDF…", "Choose PDF…")}
+                </button>
+                {upload && !uploading && (
+                  <span className="text-sm text-ink">
+                    📎 {upload.name} · {(upload.size / 1024 / 1024).toFixed(1)} MB
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] text-mute">
+                {t("PDF, maks 25 MB.", "PDF, max 25 MB.")}
+              </p>
+              {uploadError && <p className="mt-1 text-sm text-red-700">{uploadError}</p>}
+            </div>
+          )}
+          {attach && attachSource === "drop" && (
             <select
               value={dropDir}
               onChange={(e) => setDropDir(e.target.value)}
@@ -437,7 +554,7 @@ export default function CampaignComposer({
               ))}
             </select>
           )}
-          {drops.length === 0 && (
+          {attach && attachSource === "drop" && drops.length === 0 && (
             <p className="mt-2 text-[11px] text-mute">{t("Ingen drops med PDF ennå.", "No drops with a PDF yet.")}</p>
           )}
         </div>

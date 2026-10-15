@@ -11,6 +11,7 @@ import { unsubscribeTokens } from "@/lib/contacts";
 import { renderCampaign } from "@/lib/email-template";
 import { configProblems, isDryRun, sendOne } from "@/lib/resend";
 import { isValidEmail, normalizeEmail } from "@/lib/contacts";
+import { loadUploadAttachment } from "@/lib/campaign-upload";
 import { readDropFile } from "@/lib/drops";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +32,8 @@ export async function POST(req: Request) {
       preheader?: string;
       dropDir?: string | null;
       attach?: boolean;
+      uploadId?: string | null;
+      uploadName?: string | null;
     };
 
     const to = normalizeEmail(body.to ?? "");
@@ -46,7 +49,13 @@ export async function POST(req: Request) {
     // Attach the catalogue only when asked, and only via the path-traversal
     // guard the drops route already uses.
     let attachment: { filename: string; content: string } | null = null;
-    if (body.attach && body.dropDir) {
+    if (body.attach && body.uploadId) {
+      const loaded = await loadUploadAttachment(body.uploadId, body.uploadName);
+      if ("error" in loaded) {
+        return Response.json({ error: loaded.error }, { status: loaded.status });
+      }
+      attachment = loaded.attachment;
+    } else if (body.attach && body.dropDir) {
       const buf = await readDropFile(body.dropDir, "katalog.pdf");
       if (!buf) {
         return Response.json(
