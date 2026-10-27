@@ -571,9 +571,27 @@ export interface SyncNotice {
 export interface SyncOutcome extends ImportResult {
   unsubscribedByShopify: number;
   emailChanged: number;
+  /** Contacts whose name, company or city was updated from Shopify. */
+  detailsChanged: number;
   markedMissing: number;
   incomplete: boolean;
   notices: SyncNotice[];
+}
+
+/**
+ * Name, company and city belong to Shopify: nobody edits them here, so a change made in Shopify should show up
+ * here too. A blank in Shopify never erases what we already hold. Returns true when something changed.
+ */
+export function refreshDetailsFromShopify(existing: Pick<Contact, "name" | "company" | "city">, row: Pick<ShopifyCustomerRow, "name" | "company" | "city">): boolean {
+  let changed = false;
+  for (const field of ["name", "company", "city"] as const) {
+    const next = (row[field] ?? "").trim();
+    if (next && next !== existing[field]) {
+      existing[field] = next;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 const SYNC_LEASE_KEY = "contacts.sync.lease";
@@ -636,6 +654,7 @@ async function runSync(
     unsubscribedByShopify: 0,
     emailChanged: 0,
     markedMissing: 0,
+    detailsChanged: 0,
     incomplete: !opts.complete,
     notes: [],
     notices: [],
@@ -700,6 +719,7 @@ async function runSync(
       if (row.id && !existing.shopifyId) existing.shopifyId = row.id; // backfill
       existing.lastSeenInShopifyAt = now;
       if (existing.missingInShopify) existing.missingInShopify = false; // it's back
+      if (refreshDetailsFromShopify(existing, row)) result.detailsChanged++;
 
       // Tighten only — never flip an unsubscribed contact back on.
       if (!consented && existing.subscribed) {
@@ -781,6 +801,9 @@ async function runSync(
   }
   if (result.emailChanged) {
     result.notes.push(`${result.emailChanged} fikk oppdatert e-postadresse fra Shopify.`);
+  }
+  if (result.detailsChanged) {
+    result.notes.push(`${result.detailsChanged} fikk oppdatert navn, firma eller by fra Shopify.`);
   }
   if (result.unsubscribedByShopify) {
     result.notes.push(

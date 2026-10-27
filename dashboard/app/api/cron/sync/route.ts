@@ -1,5 +1,8 @@
 /**
- * The nightly contact sync, triggered by Vercel Cron.
+ * The scheduled contact sync (every 6 hours: 04, 10, 16 and 22 UTC), triggered by Vercel Cron.
+ *
+ * Every run uses a GitHub Actions runner for a few minutes, so the interval is a cost/freshness trade-off:
+ * a customer deleted or unsubscribed in Shopify can stay on the mailing list until the next run.
  *
  * Replaces an in-process `setInterval`, which on a serverless host is not a
  * scheduler at all: there is no process sitting between requests to fire it, and
@@ -51,7 +54,7 @@ export async function GET(req: Request) {
     const jobId = newJobId();
     await createJob(jobId, "customers", { trigger: "cron" });
     await dispatchRender(jobId, { command: "customers" });
-    await logInfo("scheduler", "sync.dispatched", "Nattlig synk startet.", { jobId });
+    await logInfo("scheduler", "sync.dispatched", "Planlagt synk startet.", { jobId });
     return Response.json({ ok: true, jobId });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
