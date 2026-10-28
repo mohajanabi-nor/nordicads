@@ -31,6 +31,8 @@ export interface ImportOutcome {
     belowMargin: Array<{ idx: string; name: string; margin: number }>;
   };
   warnings: string[];
+  /** Whether a full refresh of the dashboard's Shopify product list was started by this import. */
+  productSync?: "started" | "already-running" | "recent" | "unavailable" | "failed";
 }
 
 const SEVERITY_STYLE: Record<string, string> = {
@@ -620,6 +622,25 @@ export function ImportSummaryCard({ result, onClose }: { result: ImportOutcome; 
           )}
         </div>
       </div>
+      {result.productSync && result.productSync !== "unavailable" && (
+        <p className="mt-3 rounded-lg bg-cream-2 px-3 py-2 text-xs text-ink/80" data-testid="product-sync-note">
+          {result.productSync === "started" &&
+            t(
+              "Produktene på fakturaen ble slått opp direkte i Shopify nå. I tillegg er en full oppdatering av hele produktlisten i Shopify startet (tar ca. ett minutt).",
+              "The products on the invoice were looked up directly in Shopify just now. In addition, a full refresh of the whole Shopify product list was started (takes about a minute).",
+            )}
+          {(result.productSync === "already-running" || result.productSync === "recent") &&
+            t(
+              "Produktene på fakturaen ble slått opp direkte i Shopify nå. En full oppdatering av produktlisten er allerede i gang eller nylig kjørt.",
+              "The products on the invoice were looked up directly in Shopify just now. A full refresh of the product list is already running or was run a moment ago.",
+            )}
+          {result.productSync === "failed" &&
+            t(
+              "Produktene på fakturaen ble slått opp direkte i Shopify nå, men den fulle oppdateringen av produktlisten kunne ikke startes (se loggen).",
+              "The products on the invoice were looked up directly in Shopify just now, but the full refresh of the product list could not be started (see the log).",
+            )}
+        </p>
+      )}
     </section>
   );
 }

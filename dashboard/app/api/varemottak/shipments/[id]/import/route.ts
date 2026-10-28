@@ -1,4 +1,5 @@
 import { handle } from "@/lib/varemottak/http";
+import { requestProductSync } from "@/lib/varemottak/product-sync";
 import { importInvoice } from "@/lib/varemottak/service";
 
 export const dynamic = "force-dynamic";
@@ -25,12 +26,14 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         throw new Error("Ugyldig kolonnekobling");
       }
     }
-    return importInvoice(ctx, params.id, {
+    const result = await importInvoice(ctx, params.id, {
       spec: await read("spec"),
       pdf: await read("pdf"),
       currency: typeof form.get("currency") === "string" ? (form.get("currency") as string) : undefined,
       invoiceNo: typeof form.get("invoiceNo") === "string" && (form.get("invoiceNo") as string).trim() ? (form.get("invoiceNo") as string).trim() : undefined,
       mapping,
     });
+    // The invoice is in. Start a full refresh of the dashboard's Shopify product list (never fails the import).
+    return { ...result, productSync: await requestProductSync() };
   });
 }
