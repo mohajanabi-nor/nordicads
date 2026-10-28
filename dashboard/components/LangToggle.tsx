@@ -7,7 +7,7 @@ import { useLang } from "@/lib/i18n";
 export default function LangToggle() {
   const { lang, setLang } = useLang();
   const path = usePathname() ?? "";
-  if (!path.startsWith("/epost") && !path.startsWith("/picker")) return null;
+  if (!path.startsWith("/epost") && !path.startsWith("/picker") && !path.startsWith("/varemottak")) return null;
 
   const btn = (l: "no" | "en", label: string) => (
     <button

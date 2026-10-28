@@ -23,7 +23,7 @@ const LangContext = createContext<LangValue>({
 });
 
 /**
- * Only /epost and /picker are translated; everything else stays Norwegian.
+ * Only /epost, /picker and /varemottak are translated; everything else stays Norwegian.
  * The server always renders Norwegian and the saved choice is applied after
  * mount, so the first paint matches the server and hydration stays clean.
  */

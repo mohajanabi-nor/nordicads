@@ -64,6 +64,9 @@ export default async function RootLayout({
                 <Link href="/epost"className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
                   E-post
                 </Link>
+                <Link href="/varemottak" className="rounded-lg px-3 py-2 text-ink/80 hover:bg-orange/10 hover:text-ink">
+                  Varemottak
+                </Link>
                 <PriserNavLink />
                 <LoggNavLink />
                 <form action="/api/auth/logout" method="post" className="ml-2 border-l border-line pl-2">

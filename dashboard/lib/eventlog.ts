@@ -34,7 +34,8 @@ export type LogSource =
   | "priser"
   | "worker"
   | "auth"
-  | "wishlist";
+  | "wishlist"
+  | "varemottak";
 
 export interface LogEntry {
   at: string;

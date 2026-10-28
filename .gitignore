@@ -27,3 +27,8 @@ e2e/
 
 # OS
 .DS_Store
+
+# Client documents for the Varemottak pricing module (invoices, customs, portal
+# screenshots, price sheets, plan). Confidential supplier prices — never published.
+fwter/
+green.jpeg

@@ -97,13 +97,69 @@ interface ClaudeContent {
   [key: string]: unknown;
 }
 
-async function callClaude(content: ClaudeContent[], maxTokens = 8000): Promise<{ text: string; model: string }> {
+export interface CallOptions {
+  /**
+   * Stream the answer. A long answer (a 270-line invoice) takes longer than TIMEOUT_MS to generate, so
+   * the time limit applies to silence between chunks instead of to the whole call.
+   */
+  stream?: boolean;
+  retries?: number;
+  /** Reading a document is transcription; reasoning tokens only eat into the answer's token budget. */
+  noThinking?: boolean;
+}
+
+/** Read an Anthropic server-sent-event stream into the full text. `idleMs` aborts when nothing arrives. */
+async function readStream(res: Response, controller: AbortController, idleMs: number, fallbackModel: string): Promise<{ text: string; model: string }> {
+  if (!res.body) throw new Error("tomt svar fra Claude");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let model = fallbackModel;
+  let stopReason = "";
+  let timer = setTimeout(() => controller.abort(), idleMs);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), idleMs);
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        const ev = JSON.parse(payload) as {
+          type?: string;
+          message?: { model?: string };
+          delta?: { text?: string; stop_reason?: string };
+          error?: { message?: string };
+        };
+        if (ev.type === "message_start" && ev.message?.model) model = ev.message.model;
+        else if (ev.type === "content_block_delta" && ev.delta?.text) text += ev.delta.text;
+        else if (ev.type === "message_delta" && ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+        else if (ev.type === "error") throw new Error(ev.error?.message ?? "feil i strømmen fra Claude");
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  if (stopReason === "max_tokens") throw new Error("svaret ble avkortet (max_tokens)");
+  return { text, model };
+}
+
+export async function callClaude(content: ClaudeContent[], maxTokens = 8000, opts: CallOptions = {}): Promise<{ text: string; model: string }> {
   const cfg = extractionConfig();
   if (!cfg.apiKey) throw new Error("ANTHROPIC_API_KEY mangler");
 
+  const retries = opts.retries ?? MAX_RETRIES;
   let lastError = "";
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
     let res: Response;
+    const controller = new AbortController();
+    const wholeCallTimer = opts.stream ? null : setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       res = await fetch(ANTHROPIC_URL, {
         method: "POST",
@@ -116,16 +172,29 @@ async function callClaude(content: ClaudeContent[], maxTokens = 8000): Promise<{
           model: cfg.model,
           max_tokens: maxTokens,
           messages: [{ role: "user", content }],
+          ...(opts.stream ? { stream: true } : {}),
+          ...(opts.noThinking ? { thinking: { type: "disabled" } } : {}),
         }),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: controller.signal,
       });
     } catch (err) {
+      if (wholeCallTimer) clearTimeout(wholeCallTimer);
       lastError = err instanceof Error ? err.message : String(err);
-      if (attempt === MAX_RETRIES) break;
+      if (attempt === retries) break;
       await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
       continue;
     }
 
+    if (wholeCallTimer) clearTimeout(wholeCallTimer);
+    if (res.ok && opts.stream) {
+      try {
+        return await readStream(res, controller, TIMEOUT_MS, cfg.model);
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        if (attempt === retries) break;
+        continue;
+      }
+    }
     if (res.ok) {
       const body = (await res.json()) as { content?: Array<{ text?: string }>; model?: string };
       const text = (body.content ?? []).map((c) => c.text ?? "").join("");
@@ -135,7 +204,7 @@ async function callClaude(content: ClaudeContent[], maxTokens = 8000): Promise<{
     lastError = `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
     // Overload and rate limits are worth waiting out; a bad request never is.
     if (res.status !== 429 && res.status < 500) break;
-    if (attempt === MAX_RETRIES) break;
+    if (attempt === retries) break;
     await new Promise((r) => setTimeout(r, 1500 * 2 ** (attempt - 1)));
   }
 
