@@ -15,7 +15,7 @@
  *
  * Server-only.
  */
-import { SupabaseError, eq, inList, sbInsert, sbSelect, sbSelectOne } from "./supabase";
+import { SupabaseError, eq, sbInsert, sbRpc, sbSelect, sbSelectOne } from "./supabase";
 
 /** Campaign ids appear in URLs, so they are restricted to a known shape. */
 const ID_RE = /^[a-z0-9-]{8,64}$/;
@@ -190,54 +190,80 @@ export async function completedEmails(id: string): Promise<Set<string>> {
   return new Set(rows.map((r) => r.email));
 }
 
-function summarizeFrom(manifest: CampaignManifest, records: Pick<RecipientRecord, "email" | "status">[]): CampaignSummary {
-  let sent = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const r of records) {
-    if (r.status === "sent") sent++;
-    else if (r.status === "failed") failed++;
-    else skipped++;
+export interface CampaignStats {
+  total: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  remaining: number;
+}
+
+const NO_STATS: CampaignStats = { total: 0, sent: 0, failed: 0, skipped: 0, remaining: 0 };
+
+/**
+ * Progress counts for several campaigns, computed in Postgres (db/012).
+ *
+ * This used to download every recipient row and count them here. The cron does
+ * that every five minutes and the progress stream does it every batch, so the
+ * rows were the single biggest source of Supabase egress. The answer is six
+ * numbers per campaign.
+ */
+export async function campaignStats(ids: string[]): Promise<Map<string, CampaignStats>> {
+  const valid = ids.filter(isValidCampaignId);
+  const out = new Map<string, CampaignStats>();
+  if (!valid.length) return out;
+  const rows = await sbRpc<Array<{ id: string } & CampaignStats>>("campaign_stats", { p_ids: valid });
+  for (const r of rows) {
+    out.set(r.id, {
+      total: r.total,
+      sent: r.sent,
+      failed: r.failed,
+      skipped: r.skipped,
+      remaining: r.remaining,
+    });
   }
-  const done = new Set(records.map((r) => r.email));
+  return out;
+}
+
+export async function summarize(manifest: CampaignManifest): Promise<CampaignSummary> {
+  const stats = (await campaignStats([manifest.id])).get(manifest.id) ?? NO_STATS;
   return {
     id: manifest.id,
     createdAt: manifest.createdAt,
     subject: manifest.subject,
     headline: manifest.headline,
-    total: manifest.recipients.length,
-    sent,
-    failed,
-    skipped,
-    remaining: manifest.recipients.filter((e) => !done.has(e)).length,
+    ...stats,
     dryRun: manifest.dryRun,
     attachmentName: manifest.attachmentName,
   };
 }
 
-export async function summarize(manifest: CampaignManifest): Promise<CampaignSummary> {
-  return summarizeFrom(manifest, await readRecipients(manifest.id));
+/** Ids of recent campaigns with recipients still to go, newest first. */
+export async function unfinishedCampaignIds(): Promise<string[]> {
+  return sbRpc<string[]>("unfinished_campaign_ids");
 }
 
 /** Newest first, for the history list on the e-post page. */
 export async function listCampaigns(limit = 50): Promise<CampaignSummary[]> {
-  const rows = await sbSelect<CampaignRow>("campaigns", { order: "created_at.desc", limit });
+  // Not the bodies or the recipient lists: those are the bulk of each row and
+  // the history list shows neither.
+  const rows = await sbSelect<
+    Pick<CampaignRow, "id" | "created_at" | "subject" | "headline" | "attachment_name" | "dry_run">
+  >("campaigns", {
+    select: "id,created_at,subject,headline,attachment_name,dry_run",
+    order: "created_at.desc",
+    limit,
+  });
   if (!rows.length) return [];
 
-  // One query for every campaign's recipients rather than one per campaign —
-  // the history list is the page's slowest query otherwise.
-  const ids = rows.map((r) => r.id);
-  const recipients = await sbSelect<Pick<RecipientRow, "campaign_id" | "email" | "status">>(
-    "campaign_recipients",
-    { select: "campaign_id,email,status", campaign_id: inList(ids), limit: 100_000 },
-  );
-
-  const byCampaign = new Map<string, Pick<RecipientRecord, "email" | "status">[]>();
-  for (const r of recipients) {
-    const list = byCampaign.get(r.campaign_id);
-    if (list) list.push({ email: r.email, status: r.status });
-    else byCampaign.set(r.campaign_id, [{ email: r.email, status: r.status }]);
-  }
-
-  return rows.map((row) => summarizeFrom(toManifest(row), byCampaign.get(row.id) ?? []));
+  const stats = await campaignStats(rows.map((r) => r.id));
+  return rows.map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    subject: row.subject,
+    headline: row.headline,
+    ...(stats.get(row.id) ?? NO_STATS),
+    dryRun: row.dry_run,
+    attachmentName: row.attachment_name,
+  }));
 }

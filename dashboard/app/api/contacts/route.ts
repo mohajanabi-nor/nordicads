@@ -9,12 +9,10 @@
  */
 import {
   addContact,
-  contactStats,
   deleteContacts,
-  filterContacts,
-  readContacts,
+  fetchContactStats,
+  readContactsPage,
   setSubscribed,
-  sortContacts,
 } from "@/lib/contacts";
 import { ensureScheduler, syncStatus } from "@/lib/scheduler";
 import type { ContactFilter, ContactsResponse } from "@/lib/types";
@@ -45,19 +43,22 @@ export async function GET(req: Request) {
     const q = sp.get("q") ?? "";
     const filter = (sp.get("filter") ?? "alle") as ContactFilter;
 
-    const all = await readContacts();
-    const matched = sortContacts(filterContacts(all, q, filter));
-    const start = (page - 1) * pageSize;
+    // Filtering, sorting and paging all happen in Postgres, so only the rows on
+    // this page leave the database.
+    const [{ contacts, total }, stats] = await Promise.all([
+      readContactsPage(q, filter, page, pageSize),
+      fetchContactStats(),
+    ]);
 
     const payload: ContactsResponse = {
       // Stats always describe the WHOLE list, never the current page — a header
       // that changed as you paged would be worse than useless.
-      ...contactStats(all),
-      contacts: matched.slice(start, start + pageSize),
+      ...stats,
+      contacts,
       page,
       pageSize,
-      total: matched.length,
-      totalPages: Math.max(1, Math.ceil(matched.length / pageSize)),
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
       sync: await syncStatus(),
     };
     return Response.json(payload);
@@ -88,7 +89,7 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
-    return Response.json({ added: true, ...contactStats(await readContacts()) });
+    return Response.json({ added: true, ...(await fetchContactStats()) });
   } catch (err) {
     return Response.json({ error: String((err as Error).message) }, { status: 500 });
   }
@@ -119,7 +120,7 @@ export async function PATCH(req: Request) {
       return Response.json({ error: "ingen e-postadresser oppgitt" }, { status: 400 });
     }
     const changed = await setSubscribed(emails, body.subscribed);
-    return Response.json({ changed, ...contactStats(await readContacts()) });
+    return Response.json({ changed, ...(await fetchContactStats()) });
   } catch (err) {
     return Response.json({ error: String((err as Error).message) }, { status: 500 });
   }
@@ -132,7 +133,7 @@ export async function DELETE(req: Request) {
       return Response.json({ error: "ingen e-postadresser oppgitt" }, { status: 400 });
     }
     const removed = await deleteContacts(emails);
-    return Response.json({ removed, ...contactStats(await readContacts()) });
+    return Response.json({ removed, ...(await fetchContactStats()) });
   } catch (err) {
     return Response.json({ error: String((err as Error).message) }, { status: 500 });
   }

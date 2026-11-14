@@ -6,7 +6,7 @@
  * subscriber list would otherwise mean paging through twelve pages by hand —
  * and sending to everyone is the main thing this feature is for.
  */
-import { filterContacts, isMailable, readContacts } from "@/lib/contacts";
+import { matchingEmails } from "@/lib/contacts";
 import type { ContactFilter } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -19,13 +19,8 @@ export async function GET(req: Request) {
     // Selecting recipients should never hand back someone who cannot be mailed.
     const mailableOnly = sp.get("mailableOnly") === "1";
 
-    let matched = filterContacts(await readContacts(), q, filter);
-    if (mailableOnly) matched = matched.filter(isMailable);
-
-    return Response.json({
-      emails: matched.map((c) => c.email),
-      count: matched.length,
-    });
+    const emails = await matchingEmails(q, filter, mailableOnly);
+    return Response.json({ emails, count: emails.length });
   } catch (err) {
     return Response.json({ error: String((err as Error).message) }, { status: 500 });
   }

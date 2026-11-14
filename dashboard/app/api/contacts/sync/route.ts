@@ -6,7 +6,7 @@
  * the same logging. A manual sync must not be able to do something the automatic
  * one cannot — otherwise the two drift and only one of them is ever tested.
  */
-import { contactStats, readContacts } from "@/lib/contacts";
+import { fetchContactStats } from "@/lib/contacts";
 import { runSync, syncStatus } from "@/lib/scheduler";
 import { dispatchRender, usesGitHubActions } from "@/lib/github-actions";
 import { createJob, newJobId } from "@/lib/worker-jobs";
@@ -30,7 +30,7 @@ export async function POST() {
         started: true,
         jobId,
         notes: ["Synken kjorer i bakgrunnen. Oppdater om et minutt for a se resultatet."],
-        ...contactStats(await readContacts()),
+        ...(await fetchContactStats()),
         sync: await syncStatus(),
       });
     }
@@ -38,7 +38,7 @@ export async function POST() {
     const outcome = await runSync("manual");
     return Response.json({
       ...outcome,
-      ...contactStats(await readContacts()),
+      ...(await fetchContactStats()),
       sync: await syncStatus(),
     });
   } catch (err) {

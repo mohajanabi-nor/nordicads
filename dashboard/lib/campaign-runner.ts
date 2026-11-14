@@ -28,15 +28,16 @@ import { logError, logInfo, logWarn } from "./eventlog";
 import { campaignHeaders, idempotencyKey, personalize } from "./campaign-shared";
 import {
   appendRecipient,
+  campaignStats,
   completedEmails,
   readCampaign,
-  readRecipients,
+  unfinishedCampaignIds,
   type CampaignManifest,
 } from "./campaign-store";
 import { readDropFile } from "./drops";
 import { readUpload, uploadIdFromDropDir } from "./campaign-upload";
 import { clearAppState, getAppState, setAppState } from "./app-state";
-import { sbRpc, sbSelect } from "./supabase";
+import { sbRpc } from "./supabase";
 
 export interface RunnerEvent {
   event: "start" | "step" | "progress" | "log" | "done" | "error";
@@ -115,24 +116,28 @@ export interface CampaignProgress {
 /** Counts read from the recipient log — the only record that survives an
  *  instance disappearing mid-send. */
 export async function campaignProgress(manifest: CampaignManifest): Promise<CampaignProgress> {
-  const records = await readRecipients(manifest.id);
-  let sent = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const r of records) {
-    if (r.status === "sent") sent++;
-    else if (r.status === "failed") failed++;
-    else skipped++;
+  // Counted in Postgres: reading every recipient row to count them was the
+  // biggest source of egress (see db/012).
+  const s = (await campaignStats([manifest.id])).get(manifest.id);
+  if (!s) {
+    // The campaign row vanished between the read and the count; fall back to
+    // the manifest rather than reporting a finished send.
+    return {
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      total: manifest.recipients.length,
+      remaining: manifest.recipients.length,
+      done: manifest.recipients.length === 0,
+    };
   }
-  const handled = new Set(records.map((r) => r.email));
-  const remaining = manifest.recipients.filter((e) => !handled.has(e)).length;
   return {
-    sent,
-    failed,
-    skipped,
-    total: manifest.recipients.length,
-    remaining,
-    done: remaining === 0,
+    sent: s.sent,
+    failed: s.failed,
+    skipped: s.skipped,
+    total: s.total,
+    remaining: s.remaining,
+    done: s.remaining === 0,
   };
 }
 
@@ -499,17 +504,11 @@ async function sendLoop(
  *  work list. Only recent campaigns are considered; an old one that was
  *  abandoned deliberately should not spring back to life. */
 export async function unfinishedCampaigns(limit = 3): Promise<string[]> {
-  const rows = await sbSelect<{ id: string }>("campaigns", {
-    select: "id",
-    order: "created_at.desc",
-    limit: 20,
-  });
+  // The database says which of the 20 newest are unfinished, so an idle cron
+  // run downloads an empty list instead of 20 campaigns and all their rows.
   const out: string[] = [];
-  for (const row of rows) {
-    const manifest = await readCampaign(row.id);
-    if (!manifest) continue;
-    const p = await campaignProgress(manifest);
-    if (!p.done && !(await isCancelled(row.id))) out.push(row.id);
+  for (const id of await unfinishedCampaignIds()) {
+    if (!(await isCancelled(id))) out.push(id);
     if (out.length >= limit) break;
   }
   return out;

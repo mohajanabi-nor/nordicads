@@ -20,7 +20,17 @@
  * Server-only.
  */
 import type { Contact, ContactFilter, ContactStats, ImportResult } from "./types";
-import { inList, is, sbDelete, sbInsert, sbRpc, sbSelect, sbUpdate } from "./supabase";
+import {
+  inList,
+  is,
+  sbDelete,
+  sbInsert,
+  sbRpc,
+  sbSelect,
+  sbSelectPage,
+  sbUpdate,
+  type QueryParams,
+} from "./supabase";
 
 /** Row shape in Postgres. snake_case there, camelCase in the app. */
 interface ContactRow {
@@ -126,6 +136,89 @@ export function isValidEmail(email: string): boolean {
 export async function readContacts(): Promise<Contact[]> {
   const rows = await sbSelect<ContactRow>("contacts", { limit: 100_000 });
   return rows.map(fromRow);
+}
+
+/** The header numbers, counted by Postgres (db/012) instead of by downloading
+ *  every contact to count them. */
+export async function fetchContactStats(): Promise<ContactStats> {
+  const s = await sbRpc<{ count: number; subscribed: number; invalid: number; missing: number; mailable: number }>(
+    "contacts_stats",
+  );
+  return {
+    count: s.count,
+    subscribed: s.subscribed,
+    unsubscribed: s.count - s.subscribed,
+    invalid: s.invalid,
+    missing: s.missing,
+    mailable: s.mailable,
+  };
+}
+
+/** PostgREST filters for a search box + filter tab, applied by the database.
+ *  Same semantics as filterContacts(): every word must appear in email, name,
+ *  company or city. */
+function contactFilters(q: string, filter: ContactFilter): QueryParams {
+  const params: QueryParams = {};
+  switch (filter) {
+    case "abonnerer":
+      params.mailable = is(true);
+      break;
+    case "avmeldt":
+      params.subscribed = is(false);
+      break;
+    case "ugyldig":
+      params.invalid_email = is(true);
+      break;
+    case "borte":
+      params.missing_in_shopify = is(true);
+      break;
+    default:
+      break;
+  }
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6);
+  if (words.length) {
+    const groups = words.map((w) => {
+      // Quoted so commas and parentheses in the word stay literal.
+      const v = `"*${w.replace(/(["\\])/g, "\\$1")}*"`;
+      return `or(email.ilike.${v},name.ilike.${v},company.ilike.${v},city.ilike.${v})`;
+    });
+    params.and = `(${groups.join(",")})`;
+  }
+  return params;
+}
+
+/** One page of contacts, filtered, sorted and paged in Postgres. Mailable first,
+ *  newest first within each group — same order as sortContacts(). */
+export async function readContactsPage(
+  q: string,
+  filter: ContactFilter,
+  page: number,
+  pageSize: number,
+): Promise<{ contacts: Contact[]; total: number }> {
+  const { rows, total } = await sbSelectPage<ContactRow>(
+    "contacts",
+    { ...contactFilters(q, filter), order: "mailable.desc,added_at.desc,email.asc" },
+    (page - 1) * pageSize,
+    pageSize,
+  );
+  return { contacts: rows.map(fromRow), total };
+}
+
+/** Just the addresses matching a search/filter, optionally only mailable ones. */
+export async function matchingEmails(
+  q: string,
+  filter: ContactFilter,
+  mailableOnly: boolean,
+): Promise<string[]> {
+  const params = contactFilters(q, filter);
+  if (mailableOnly) params.mailable = is(true);
+  const rows = await sbSelect<{ email: string }>("contacts", {
+    ...params,
+    select: "email",
+    order: "mailable.desc,added_at.desc,email.asc",
+    limit: 100_000,
+  });
+  return rows.map((r) => r.email);
 }
 
 export function contactStats(contacts: Contact[]): ContactStats {
