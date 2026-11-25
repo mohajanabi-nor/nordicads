@@ -49,7 +49,6 @@ if SENTRY_ON:
         dsn=os.environ["SENTRY_DSN"],
         environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
         release=os.environ.get("SENTRY_RELEASE") or None,
-        send_default_pii=False,
         traces_sample_rate=0,
     )
     sentry_sdk.set_tag("source", "worker")
